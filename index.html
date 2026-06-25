@@ -1,0 +1,1029 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>DailyFlow — Your Alien Productivity OS</title>
+<meta name="description" content="Pomodoro timer, activity log, analytics, achievements, ambient sounds and cloud sync. All in one tab."/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --v1:#7C3AED;--v2:#6D28D9;--v3:#5B21B6;
+  --c1:#A78BFA;--c2:#C4B5FD;--c3:#DDD6FE;
+  --bg:#04030f;--bg2:#070614;--bg3:#0b0920;
+  --surf:rgba(124,58,237,.08);--surf2:rgba(124,58,237,.15);
+  --border:rgba(124,58,237,.25);--border2:rgba(167,139,250,.4);
+  --text:#e8e0ff;--muted:#9180c4;
+  --cyan:#22d3ee;--pink:#f472b6;--gold:#fbbf24;
+  --glow:0 0 20px rgba(124,58,237,.6),0 0 60px rgba(124,58,237,.3);
+  --glow2:0 0 30px rgba(167,139,250,.5);
+}
+html{scroll-behavior:smooth;font-size:16px}
+body{
+  font-family:'Space Grotesk',sans-serif;
+  background:var(--bg);color:var(--text);
+  overflow-x:hidden;min-height:100vh;
+}
+/* ── CANVAS STARFIELD ── */
+#stars{position:fixed;inset:0;z-index:0;pointer-events:none}
+/* ── SCANLINE OVERLAY ── */
+body::after{
+  content:'';position:fixed;inset:0;z-index:1;pointer-events:none;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.04) 2px,rgba(0,0,0,.04) 4px);
+}
+/* ── GRID BACKGROUND ── */
+.grid-bg{
+  position:fixed;inset:0;z-index:0;pointer-events:none;
+  background-image:
+    linear-gradient(rgba(124,58,237,.04) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(124,58,237,.04) 1px,transparent 1px);
+  background-size:60px 60px;
+  mask-image:radial-gradient(ellipse 80% 80% at 50% 50%,black 40%,transparent 100%);
+}
+/* ── MAIN CONTENT ── */
+main{position:relative;z-index:2}
+/* ── NAV ── */
+nav{
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:16px 40px;
+  background:rgba(4,3,15,.7);
+  backdrop-filter:blur(20px);
+  border-bottom:1px solid var(--border);
+}
+.nav-logo{
+  display:flex;align-items:center;gap:10px;
+  font-weight:700;font-size:1.1rem;color:var(--c2);
+  letter-spacing:.5px;
+}
+.nav-logo-icon{
+  width:32px;height:32px;background:var(--v1);
+  border-radius:9px;display:flex;align-items:center;justify-content:center;
+  box-shadow:var(--glow);
+}
+.nav-cta{
+  display:flex;align-items:center;gap:12px;
+  text-decoration:none;
+  padding:9px 22px;border-radius:8px;
+  font-size:.9rem;font-weight:600;
+  background:var(--v1);color:#fff;
+  border:1px solid var(--c1);
+  box-shadow:var(--glow);
+  transition:all .2s;
+}
+.nav-cta:hover{background:var(--v2);box-shadow:0 0 35px rgba(124,58,237,.8),0 0 70px rgba(124,58,237,.4);transform:translateY(-1px)}
+/* ── HERO ── */
+.hero{
+  min-height:100vh;display:flex;align-items:center;justify-content:center;
+  flex-direction:column;text-align:center;padding:120px 24px 80px;
+  position:relative;
+}
+.hero-badge{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:6px 16px;border-radius:100px;
+  border:1px solid var(--border2);
+  background:var(--surf);
+  font-size:.75rem;font-family:'Space Mono',monospace;
+  color:var(--c1);letter-spacing:1px;text-transform:uppercase;
+  margin-bottom:32px;
+  animation:fadeInDown .8s ease both;
+}
+.badge-dot{width:6px;height:6px;border-radius:50%;background:var(--cyan);box-shadow:0 0 8px var(--cyan);animation:pulse 2s infinite}
+.hero-title{
+  font-size:clamp(3rem,8vw,7rem);font-weight:700;
+  line-height:1.0;letter-spacing:-2px;
+  margin-bottom:12px;
+  animation:fadeInDown .8s .1s ease both;
+}
+.hero-title .line1{
+  display:block;
+  background:linear-gradient(135deg,#fff 0%,var(--c2) 50%,var(--c1) 100%);
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+}
+.hero-title .line2{
+  display:block;
+  background:linear-gradient(135deg,var(--c1) 0%,var(--cyan) 60%,var(--pink) 100%);
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+  filter:drop-shadow(0 0 30px rgba(167,139,250,.5));
+}
+.hero-sub{
+  font-size:clamp(1rem,2vw,1.25rem);color:var(--muted);
+  max-width:560px;line-height:1.7;margin-bottom:48px;
+  animation:fadeInDown .8s .2s ease both;
+}
+.hero-sub strong{color:var(--c2)}
+.hero-ctas{
+  display:flex;align-items:center;gap:16px;flex-wrap:wrap;justify-content:center;
+  animation:fadeInDown .8s .3s ease both;
+}
+.btn-primary{
+  display:flex;align-items:center;gap:10px;
+  padding:14px 32px;border-radius:10px;
+  font-size:1rem;font-weight:700;font-family:'Space Grotesk',sans-serif;
+  background:var(--v1);color:#fff;
+  border:1px solid var(--c1);
+  box-shadow:var(--glow),inset 0 1px 0 rgba(255,255,255,.1);
+  cursor:pointer;text-decoration:none;
+  transition:all .25s;position:relative;overflow:hidden;
+}
+.btn-primary::before{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(135deg,rgba(255,255,255,.15),transparent);
+  opacity:0;transition:opacity .25s;
+}
+.btn-primary:hover{transform:translateY(-3px);box-shadow:0 0 50px rgba(124,58,237,.9),0 0 100px rgba(124,58,237,.4)}
+.btn-primary:hover::before{opacity:1}
+.btn-ghost{
+  display:flex;align-items:center;gap:8px;
+  padding:14px 28px;border-radius:10px;
+  font-size:1rem;font-weight:600;font-family:'Space Grotesk',sans-serif;
+  background:transparent;color:var(--c2);
+  border:1px solid var(--border2);
+  cursor:pointer;text-decoration:none;
+  transition:all .25s;
+}
+.btn-ghost:hover{background:var(--surf2);box-shadow:var(--glow2)}
+/* ── ANIMATED TIMER HERO ── */
+.hero-visual{
+  margin-top:64px;position:relative;
+  animation:fadeIn 1s .5s ease both;
+}
+.hero-timer-wrap{
+  position:relative;width:280px;height:280px;margin:0 auto;
+}
+.hero-ring-svg{width:280px;height:280px}
+.hero-ring-bg{fill:none;stroke:rgba(124,58,237,.15);stroke-width:8}
+.hero-ring-fg{
+  fill:none;stroke:url(#ringGrad);stroke-width:8;
+  stroke-linecap:round;
+  stroke-dasharray:552;stroke-dashoffset:552;
+  transform:rotate(-90deg);transform-origin:center;
+  animation:fillRing 3s 1s cubic-bezier(.4,0,.2,1) forwards;
+  filter:drop-shadow(0 0 8px rgba(167,139,250,.8));
+}
+@keyframes fillRing{to{stroke-dashoffset:138}}
+.hero-timer-inner{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+}
+.hero-timer-num{
+  font-family:'Space Mono',monospace;font-size:3.2rem;font-weight:700;
+  color:#fff;text-shadow:0 0 20px rgba(167,139,250,.7);
+  letter-spacing:-2px;
+}
+.hero-timer-lbl{
+  font-size:.75rem;color:var(--c1);font-weight:600;
+  letter-spacing:2px;text-transform:uppercase;margin-top:4px;
+}
+.hero-timer-poms{
+  display:flex;gap:8px;margin-top:12px;
+}
+.pom-dot{
+  width:10px;height:10px;border-radius:50%;
+  background:var(--v1);box-shadow:0 0 10px var(--v1);
+  animation:pomPop .4s ease both;
+}
+.pom-dot:nth-child(1){animation-delay:.1s}
+.pom-dot:nth-child(2){animation-delay:.2s}
+.pom-dot:nth-child(3){animation-delay:.3s;opacity:.4}
+.pom-dot:nth-child(4){animation-delay:.4s;opacity:.4}
+@keyframes pomPop{from{transform:scale(0)}to{transform:scale(1)}}
+/* glow orbs behind timer */
+.hero-orb{
+  position:absolute;border-radius:50%;filter:blur(60px);pointer-events:none;z-index:-1;
+}
+.orb1{width:300px;height:300px;background:rgba(124,58,237,.3);top:50%;left:50%;transform:translate(-50%,-50%)}
+.orb2{width:200px;height:200px;background:rgba(34,211,238,.15);top:0;right:-80px}
+.orb3{width:160px;height:160px;background:rgba(244,114,182,.12);bottom:0;left:-60px}
+/* ── SECTION COMMONS ── */
+section{padding:100px 24px;max-width:1200px;margin:0 auto}
+.section-label{
+  font-size:.7rem;font-family:'Space Mono',monospace;
+  color:var(--cyan);letter-spacing:3px;text-transform:uppercase;
+  margin-bottom:14px;display:block;
+}
+.section-title{
+  font-size:clamp(2rem,5vw,3.2rem);font-weight:700;
+  letter-spacing:-1px;line-height:1.1;margin-bottom:16px;
+}
+.section-sub{
+  font-size:1.1rem;color:var(--muted);max-width:540px;line-height:1.7;
+  margin-bottom:60px;
+}
+/* ── FEATURE STRIP ── */
+.strip{
+  padding:24px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);
+  overflow:hidden;position:relative;
+}
+.strip-inner{
+  display:flex;gap:48px;align-items:center;
+  animation:marquee 20s linear infinite;
+  white-space:nowrap;
+}
+.strip-item{
+  display:flex;align-items:center;gap:8px;
+  font-size:.85rem;font-weight:600;color:var(--muted);
+  flex-shrink:0;
+}
+.strip-icon{font-size:1rem}
+@keyframes marquee{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+/* ── CARDS ── */
+.cards-grid{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+  gap:24px;
+}
+.card{
+  background:var(--surf);
+  border:1px solid var(--border);
+  border-radius:16px;padding:32px;
+  position:relative;overflow:hidden;
+  transition:all .3s;
+  opacity:0;transform:translateY(24px);
+}
+.card.visible{opacity:1;transform:translateY(0)}
+.card::before{
+  content:'';position:absolute;inset:0;border-radius:16px;
+  background:linear-gradient(135deg,rgba(124,58,237,.1),transparent 60%);
+  opacity:0;transition:opacity .3s;
+}
+.card:hover{border-color:var(--border2);box-shadow:0 0 40px rgba(124,58,237,.2);transform:translateY(-4px)}
+.card:hover::before{opacity:1}
+.card-icon{
+  width:48px;height:48px;border-radius:12px;
+  background:var(--surf2);border:1px solid var(--border2);
+  display:flex;align-items:center;justify-content:center;
+  font-size:1.4rem;margin-bottom:20px;
+}
+.card-title{font-size:1.1rem;font-weight:700;color:#fff;margin-bottom:8px}
+.card-desc{font-size:.9rem;color:var(--muted);line-height:1.7}
+.card-tag{
+  display:inline-block;margin-top:16px;
+  font-size:.7rem;font-family:'Space Mono',monospace;
+  color:var(--cyan);background:rgba(34,211,238,.1);
+  border:1px solid rgba(34,211,238,.25);
+  padding:3px 10px;border-radius:100px;letter-spacing:1px;
+}
+/* ── HERO FEATURE (big card) ── */
+.big-card{
+  grid-column:span 2;
+  display:grid;grid-template-columns:1fr 1fr;gap:32px;align-items:center;
+}
+@media(max-width:768px){.big-card{grid-column:span 1;grid-template-columns:1fr}}
+/* ── TIMER DEMO CARD ── */
+.timer-demo{
+  background:var(--bg3);border-radius:12px;padding:24px;
+  border:1px solid var(--border);
+}
+.mode-tabs-demo{display:flex;gap:4px;margin-bottom:20px}
+.tab-demo{
+  flex:1;padding:7px;border-radius:7px;font-size:.8rem;font-weight:600;
+  border:none;cursor:pointer;font-family:'Space Grotesk',sans-serif;
+  transition:all .2s;
+}
+.tab-demo.active{background:var(--v1);color:#fff;box-shadow:0 0 12px rgba(124,58,237,.5)}
+.tab-demo:not(.active){background:transparent;color:var(--muted);border:1px solid var(--border)}
+.mini-ring{position:relative;width:120px;height:120px;margin:0 auto 16px}
+.mini-ring svg{width:120px;height:120px}
+.mini-ring-inner{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.mini-time{font-family:'Space Mono',monospace;font-size:1.5rem;font-weight:700;color:#fff}
+.mini-lbl{font-size:.65rem;color:var(--c1);text-transform:uppercase;letter-spacing:2px}
+.timer-controls-demo{display:flex;justify-content:center;gap:12px}
+.ctrl-demo{
+  width:40px;height:40px;border-radius:50%;border:1px solid var(--border2);
+  background:var(--surf);display:flex;align-items:center;justify-content:center;
+  cursor:pointer;transition:all .2s;font-size:1.1rem;
+}
+.ctrl-demo:hover,.ctrl-demo.big{background:var(--v1);border-color:var(--v1);box-shadow:0 0 15px rgba(124,58,237,.5)}
+.ctrl-demo.big{width:52px;height:52px;font-size:1.3rem}
+/* ── LOG DEMO ── */
+.log-demo{background:var(--bg3);border-radius:12px;padding:20px;border:1px solid var(--border)}
+.log-entry{
+  display:flex;align-items:flex-start;gap:12px;padding:10px 0;
+  border-bottom:1px solid rgba(124,58,237,.1);
+}
+.log-entry:last-child{border-bottom:none}
+.log-dot{
+  width:10px;height:10px;border-radius:50%;flex-shrink:0;margin-top:4px;
+}
+.log-text{font-size:.85rem;color:var(--text);line-height:1.5;flex:1}
+.log-meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.log-tag{
+  font-size:.7rem;font-family:'Space Mono',monospace;
+  padding:2px 7px;border-radius:100px;
+  background:var(--surf2);color:var(--c2);
+}
+.log-poms{font-size:.7rem;color:var(--muted);display:flex;align-items:center;gap:3px}
+/* ── ANALYTICS DEMO ── */
+.analytics-demo{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.stat-block{
+  background:var(--bg3);border-radius:12px;padding:20px;
+  border:1px solid var(--border);text-align:center;
+}
+.stat-num{
+  font-size:2.5rem;font-weight:700;font-family:'Space Mono',monospace;
+  background:linear-gradient(135deg,var(--c2),var(--cyan));
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+}
+.stat-name{font-size:.75rem;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:1px}
+.streak-block{
+  grid-column:span 2;
+  background:linear-gradient(135deg,rgba(124,58,237,.15),rgba(34,211,238,.08));
+  border-radius:12px;padding:20px;border:1px solid var(--border2);
+  display:flex;align-items:center;gap:16px;
+}
+.streak-fire{font-size:2rem}
+.streak-num-big{font-size:2.8rem;font-weight:700;font-family:'Space Mono',monospace;color:var(--gold)}
+.streak-info{font-size:.8rem;color:var(--muted)}
+/* ── BAR CHART DEMO ── */
+.chart-demo{
+  background:var(--bg3);border-radius:12px;padding:20px;
+  border:1px solid var(--border);
+}
+.chart-bars{display:flex;gap:8px;align-items:flex-end;height:80px;margin-bottom:8px}
+.bar{
+  flex:1;border-radius:4px 4px 0 0;min-height:4px;
+  background:linear-gradient(180deg,var(--c1),var(--v2));
+  transition:height 1s cubic-bezier(.4,0,.2,1);
+  box-shadow:0 0 10px rgba(167,139,250,.3);
+}
+.chart-days{display:flex;gap:8px}
+.chart-day{flex:1;font-size:.6rem;color:var(--muted);text-align:center;font-family:'Space Mono',monospace}
+/* ── ACHIEVEMENTS ── */
+.ach-showcase{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
+  gap:12px;
+}
+.ach-card{
+  background:var(--surf);border:1px solid var(--border);
+  border-radius:12px;padding:16px 12px;text-align:center;
+  transition:all .3s;cursor:default;
+  opacity:0;transform:scale(.9);
+}
+.ach-card.visible{opacity:1;transform:scale(1)}
+.ach-card:hover{border-color:var(--border2);transform:scale(1.05);box-shadow:0 0 20px rgba(124,58,237,.3)}
+.ach-icon{font-size:1.8rem;display:block;margin-bottom:8px}
+.ach-name{font-size:.75rem;font-weight:700;color:var(--text);margin-bottom:3px}
+.ach-desc{font-size:.65rem;color:var(--muted);line-height:1.4}
+.ach-tier{
+  display:inline-block;font-size:.6rem;font-family:'Space Mono',monospace;
+  padding:2px 8px;border-radius:100px;margin-top:6px;text-transform:uppercase;
+}
+.tier-bronze{background:rgba(180,83,9,.2);color:#d97706;border:1px solid rgba(180,83,9,.3)}
+.tier-silver{background:rgba(107,114,128,.2);color:#9ca3af;border:1px solid rgba(107,114,128,.3)}
+.tier-gold{background:rgba(251,191,36,.15);color:#fbbf24;border:1px solid rgba(251,191,36,.3)}
+.tier-platinum{
+  background:linear-gradient(135deg,rgba(167,139,250,.2),rgba(34,211,238,.1));
+  color:var(--c2);border:1px solid var(--border2);
+}
+/* ── AMBIENT DEMO ── */
+.ambient-demo{display:flex;flex-direction:column;gap:12px}
+.sound-btn-demo{
+  display:flex;align-items:center;gap:12px;
+  padding:12px 16px;border-radius:10px;
+  border:1px solid var(--border);background:var(--surf);
+  transition:all .2s;cursor:pointer;
+}
+.sound-btn-demo.active{border-color:var(--border2);background:var(--surf2);box-shadow:0 0 15px rgba(124,58,237,.2)}
+.sound-wave{display:flex;gap:3px;align-items:center;height:20px;margin-left:auto}
+.sound-bar{
+  width:3px;background:var(--c1);border-radius:2px;
+}
+.sound-btn-demo.active .sound-bar{animation:soundAnim .8s ease infinite alternate}
+.sound-bar:nth-child(2){animation-delay:.1s}
+.sound-bar:nth-child(3){animation-delay:.2s}
+.sound-bar:nth-child(4){animation-delay:.15s}
+.sound-bar:nth-child(5){animation-delay:.05s}
+@keyframes soundAnim{from{height:4px}to{height:18px}}
+/* ── SYNC SECTION ── */
+.sync-visual{
+  display:flex;align-items:center;justify-content:center;gap:0;
+  flex-wrap:wrap;margin:40px 0;
+}
+.sync-node{
+  background:var(--surf);border:1px solid var(--border2);
+  border-radius:12px;padding:16px 20px;text-align:center;
+  font-size:.8rem;color:var(--c2);
+  box-shadow:0 0 20px rgba(124,58,237,.15);
+}
+.sync-arrow{
+  font-size:1.5rem;color:var(--v1);margin:0 8px;
+  animation:arrowPulse 1.5s ease infinite;
+}
+@keyframes arrowPulse{0%,100%{opacity:.4;transform:scaleX(.9)}50%{opacity:1;transform:scaleX(1)}}
+/* ── PROFILE DEMO ── */
+.profiles-row{display:flex;gap:12px;flex-wrap:wrap}
+.profile-chip{
+  display:flex;align-items:center;gap:8px;
+  padding:8px 16px;border-radius:100px;
+  border:1px solid var(--border);background:var(--surf);
+  font-size:.85rem;font-weight:600;transition:all .2s;
+}
+.profile-chip.active{border-color:var(--border2);background:var(--surf2);box-shadow:0 0 15px rgba(124,58,237,.2)}
+.profile-avatar{
+  width:24px;height:24px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:.8rem;font-weight:700;
+}
+/* ── CTA SECTION ── */
+.cta-section{
+  text-align:center;padding:100px 24px;position:relative;
+}
+.cta-glow{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:600px;height:300px;
+  background:radial-gradient(ellipse,rgba(124,58,237,.2) 0%,transparent 70%);
+  pointer-events:none;
+}
+.cta-title{
+  font-size:clamp(2.5rem,6vw,4.5rem);font-weight:700;
+  letter-spacing:-2px;line-height:1.1;margin-bottom:20px;
+}
+.cta-sub{font-size:1.1rem;color:var(--muted);margin-bottom:40px;max-width:480px;margin-left:auto;margin-right:auto}
+/* ── FOOTER ── */
+footer{
+  text-align:center;padding:32px 24px;
+  border-top:1px solid var(--border);
+  font-size:.8rem;color:var(--muted);
+}
+footer a{color:var(--c1);text-decoration:none}
+footer a:hover{text-decoration:underline}
+/* ── ANIMATIONS ── */
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes fadeInDown{from{opacity:0;transform:translateY(-16px)}to{opacity:1;transform:translateY(0)}}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.6;transform:scale(.85)}}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-12px)}}
+.hero-visual{animation:float 5s ease-in-out infinite, fadeIn 1s .5s ease both}
+/* ── GLITCH TEXT ── */
+.glitch{position:relative}
+.glitch::before,.glitch::after{
+  content:attr(data-text);position:absolute;left:0;top:0;width:100%;
+}
+.glitch::before{
+  clip-path:polygon(0 0,100% 0,100% 35%,0 35%);
+  animation:glitch1 3s 2s infinite;color:var(--cyan);opacity:.7;
+}
+.glitch::after{
+  clip-path:polygon(0 65%,100% 65%,100% 100%,0 100%);
+  animation:glitch2 3s 2.5s infinite;color:var(--pink);opacity:.7;
+}
+@keyframes glitch1{0%,95%,100%{transform:translate(0)}97%{transform:translate(-4px,2px)}}
+@keyframes glitch2{0%,95%,100%{transform:translate(0)}97%{transform:translate(4px,-2px)}}
+/* ── RESPONSIVE ── */
+@media(max-width:640px){
+  nav{padding:14px 20px}
+  .analytics-demo{grid-template-columns:1fr}
+  .streak-block{grid-column:span 1}
+  .ach-showcase{grid-template-columns:repeat(3,1fr)}
+  .sync-visual{flex-direction:column;gap:4px}
+  .sync-arrow{transform:rotate(90deg);display:block;margin:4px 0}
+}
+/* prefers-reduced-motion */
+@media(prefers-reduced-motion:reduce){
+  *{animation-duration:.01ms!important;transition-duration:.01ms!important}
+}
+/* HERO MINI WAVE */
+.hero-wave-wrap{
+  position:absolute;bottom:0;left:0;right:0;height:80px;overflow:hidden;pointer-events:none;
+}
+.hero-wave-svg{width:100%;height:80px}
+</style>
+</head>
+<body>
+<canvas id="stars"></canvas>
+<div class="grid-bg"></div>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-logo">
+    <div class="nav-logo-icon">
+      <svg viewBox="0 0 24 24" fill="white" width="18" height="18"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm.5 5v5.25l4.5 2.67-.75 1.23L11 13V7h1.5z"/></svg>
+    </div>
+    DailyFlow
+  </div>
+  <a href="./app.html" class="nav-cta">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M8 5v14l11-7z"/></svg>
+    Launch App
+  </a>
+</nav>
+
+<main>
+<!-- HERO -->
+<div class="hero">
+  <div class="hero-badge">
+    <span class="badge-dot"></span>
+    Productivity OS · Free · No ads · Cloud-synced
+  </div>
+  <h1 class="hero-title">
+    <span class="line1">Your Daily</span>
+    <span class="line2 glitch" data-text="Command Center">Command Center</span>
+  </h1>
+  <p class="hero-sub">
+    <strong>Pomodoro timer</strong> · activity log · achievements · ambient sounds · analytics.
+    Everything your focus sessions need. In one tab. Synced everywhere.
+  </p>
+  <div class="hero-ctas">
+    <a href="./app.html" class="btn-primary">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="18" height="18"><path d="M8 5v14l11-7z"/></svg>
+      Start for Free
+    </a>
+    <a href="#features" class="btn-ghost">
+      Explore Features
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16"><polyline points="6 9 12 15 18 9"/></svg>
+    </a>
+  </div>
+
+  <div class="hero-visual">
+    <div class="orb1 hero-orb"></div>
+    <div class="orb2 hero-orb"></div>
+    <div class="orb3 hero-orb"></div>
+    <div class="hero-timer-wrap">
+      <svg class="hero-ring-svg" viewBox="0 0 220 220">
+        <defs>
+          <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#7C3AED"/>
+            <stop offset="50%" stop-color="#A78BFA"/>
+            <stop offset="100%" stop-color="#22d3ee"/>
+          </linearGradient>
+        </defs>
+        <circle class="hero-ring-bg" cx="110" cy="110" r="88"/>
+        <circle class="hero-ring-fg" cx="110" cy="110" r="88"/>
+      </svg>
+      <div class="hero-timer-inner">
+        <div class="hero-timer-num" id="heroTime">25:00</div>
+        <div class="hero-timer-lbl">Focus Time</div>
+        <div class="hero-timer-poms">
+          <div class="pom-dot"></div>
+          <div class="pom-dot"></div>
+          <div class="pom-dot"></div>
+          <div class="pom-dot"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Wave at bottom of hero -->
+  <div class="hero-wave-wrap">
+    <svg class="hero-wave-svg" viewBox="0 0 1440 80" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+      <path id="heroWavePath" fill="rgba(124,58,237,0.08)"/>
+    </svg>
+  </div>
+</div>
+
+<!-- STRIP -->
+<div class="strip">
+  <div class="strip-inner" id="stripInner">
+    <span class="strip-item"><span class="strip-icon">🍅</span>Pomodoro Timer</span>
+    <span class="strip-item"><span class="strip-icon">📝</span>Activity Log</span>
+    <span class="strip-item"><span class="strip-icon">📊</span>Analytics</span>
+    <span class="strip-item"><span class="strip-icon">🏆</span>22 Achievements</span>
+    <span class="strip-item"><span class="strip-icon">🎧</span>Ambient Sounds</span>
+    <span class="strip-item"><span class="strip-icon">☁️</span>Cloud Sync</span>
+    <span class="strip-item"><span class="strip-icon">👥</span>Multi-Profile</span>
+    <span class="strip-item"><span class="strip-icon">🌍</span>World Clock</span>
+    <span class="strip-item"><span class="strip-icon">🔥</span>Day Streaks</span>
+    <span class="strip-item"><span class="strip-icon">🌙</span>Dark Mode</span>
+    <span class="strip-item"><span class="strip-icon">📱</span>Installable PWA</span>
+    <span class="strip-item"><span class="strip-icon">👁️</span>Eye Comfort</span>
+    <!-- duplicate for seamless loop -->
+    <span class="strip-item"><span class="strip-icon">🍅</span>Pomodoro Timer</span>
+    <span class="strip-item"><span class="strip-icon">📝</span>Activity Log</span>
+    <span class="strip-item"><span class="strip-icon">📊</span>Analytics</span>
+    <span class="strip-item"><span class="strip-icon">🏆</span>22 Achievements</span>
+    <span class="strip-item"><span class="strip-icon">🎧</span>Ambient Sounds</span>
+    <span class="strip-item"><span class="strip-icon">☁️</span>Cloud Sync</span>
+    <span class="strip-item"><span class="strip-icon">👥</span>Multi-Profile</span>
+    <span class="strip-item"><span class="strip-icon">🌍</span>World Clock</span>
+    <span class="strip-item"><span class="strip-icon">🔥</span>Day Streaks</span>
+    <span class="strip-item"><span class="strip-icon">🌙</span>Dark Mode</span>
+    <span class="strip-item"><span class="strip-icon">📱</span>Installable PWA</span>
+    <span class="strip-item"><span class="strip-icon">👁️</span>Eye Comfort</span>
+  </div>
+</div>
+
+<!-- FEATURES -->
+<section id="features">
+  <span class="section-label">Core Features</span>
+  <h2 class="section-title">Built for deep work.<br>Designed for humans.</h2>
+  <p class="section-sub">Every feature was added because it actually helps. Zero bloat. Zero subscription. Zero ads.</p>
+
+  <div class="cards-grid">
+
+    <!-- BIG: Timer + Log -->
+    <div class="card big-card reveal">
+      <div>
+        <div class="card-icon">🍅</div>
+        <div class="card-title">Pomodoro Timer</div>
+        <p class="card-desc">Work · Short Break · Long Break with fully customizable durations. A wave animation fills the header as your session progresses. Auto-start breaks, desktop notifications, and keyboard shortcuts included.</p>
+        <span class="card-tag">FOCUS ENGINE</span>
+      </div>
+      <div class="timer-demo">
+        <div class="mode-tabs-demo">
+          <button class="tab-demo active">Work</button>
+          <button class="tab-demo">Short Break</button>
+          <button class="tab-demo">Long Break</button>
+        </div>
+        <div class="mini-ring">
+          <svg viewBox="0 0 120 120">
+            <defs>
+              <linearGradient id="miniGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stop-color="#7C3AED"/>
+                <stop offset="100%" stop-color="#22d3ee"/>
+              </linearGradient>
+            </defs>
+            <circle fill="none" stroke="rgba(124,58,237,.15)" stroke-width="6" cx="60" cy="60" r="52"/>
+            <circle id="miniRing" fill="none" stroke="url(#miniGrad)" stroke-width="6" cx="60" cy="60" r="52"
+              stroke-linecap="round"
+              stroke-dasharray="327" stroke-dashoffset="82"
+              transform="rotate(-90 60 60)"
+              style="filter:drop-shadow(0 0 6px rgba(167,139,250,.8))"/>
+          </svg>
+          <div class="mini-ring-inner">
+            <div class="mini-time" id="demoTime">20:15</div>
+            <div class="mini-lbl">Work</div>
+          </div>
+        </div>
+        <div class="timer-controls-demo">
+          <div class="ctrl-demo">↩</div>
+          <div class="ctrl-demo big">⏸</div>
+          <div class="ctrl-demo">⏭</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Activity Log -->
+    <div class="card reveal">
+      <div class="card-icon">📝</div>
+      <div class="card-title">Activity Log</div>
+      <p class="card-desc">Tag entries with categories, priorities, and <code style="color:var(--cyan);font-size:.8em">#hashtags</code>. Add sub-tasks, comments, time spent, and roll incomplete tasks to tomorrow.</p>
+      <span class="card-tag">DAILY LOG</span>
+      <div class="log-demo" style="margin-top:16px">
+        <div class="log-entry">
+          <div class="log-dot" style="background:#7C3AED;box-shadow:0 0 8px #7C3AED"></div>
+          <div>
+            <div class="log-text">Design new landing page <span style="color:var(--cyan)">#design</span></div>
+            <div class="log-meta">
+              <span class="log-tag">💼 Work</span>
+              <span class="log-tag">🔴 High</span>
+              <span class="log-poms">🍅 3</span>
+            </div>
+          </div>
+        </div>
+        <div class="log-entry">
+          <div class="log-dot" style="background:#22d3ee;box-shadow:0 0 8px #22d3ee"></div>
+          <div>
+            <div class="log-text">Morning run 5km <span style="color:var(--cyan)">#health</span></div>
+            <div class="log-meta">
+              <span class="log-tag">💪 Health</span>
+              <span class="log-poms">✅ Done</span>
+            </div>
+          </div>
+        </div>
+        <div class="log-entry">
+          <div class="log-dot" style="background:#f472b6;box-shadow:0 0 8px #f472b6"></div>
+          <div>
+            <div class="log-text">Read Atomic Habits ch.5 <span style="color:var(--cyan)">#study</span></div>
+            <div class="log-meta">
+              <span class="log-tag">📚 Study</span>
+              <span class="log-tag">🟡 Medium</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Analytics -->
+    <div class="card reveal">
+      <div class="card-icon">📊</div>
+      <div class="card-title">Analytics & Streaks</div>
+      <p class="card-desc">7-day bar chart of entries + pomodoros. Track your all-time stats. Build daily streaks and see exactly how consistent you are.</p>
+      <span class="card-tag">INSIGHTS</span>
+      <div class="analytics-demo" style="margin-top:16px">
+        <div class="stat-block">
+          <div class="stat-num" id="countUp1">0</div>
+          <div class="stat-name">Entries</div>
+        </div>
+        <div class="stat-block">
+          <div class="stat-num" id="countUp2">0</div>
+          <div class="stat-name">Pomodoros</div>
+        </div>
+        <div class="streak-block">
+          <div class="streak-fire">🔥</div>
+          <div class="streak-num-big" id="countUp3">0</div>
+          <div>
+            <div style="font-weight:700;color:#fff;font-size:.9rem">Day Streak</div>
+            <div class="streak-info">Keep logging to build your streak</div>
+          </div>
+        </div>
+      </div>
+      <div class="chart-demo" style="margin-top:16px">
+        <div class="chart-bars" id="chartBars">
+          <div class="bar" style="height:0" data-h="40"></div>
+          <div class="bar" style="height:0" data-h="60"></div>
+          <div class="bar" style="height:0" data-h="35"></div>
+          <div class="bar" style="height:0" data-h="75"></div>
+          <div class="bar" style="height:0" data-h="50"></div>
+          <div class="bar" style="height:0" data-h="80"></div>
+          <div class="bar" style="height:0" data-h="65"></div>
+        </div>
+        <div class="chart-days">
+          <div class="chart-day">Mon</div><div class="chart-day">Tue</div>
+          <div class="chart-day">Wed</div><div class="chart-day">Thu</div>
+          <div class="chart-day">Fri</div><div class="chart-day">Sat</div>
+          <div class="chart-day">Sun</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ambient -->
+    <div class="card reveal">
+      <div class="card-icon">🎧</div>
+      <div class="card-title">Ambient Sounds</div>
+      <p class="card-desc">White noise, rain, or deep brown noise — generated in-browser. No files to download, no autoplay surprises. Volume-controlled. Kills distractions instantly.</p>
+      <span class="card-tag">FOCUS AUDIO</span>
+      <div class="ambient-demo" style="margin-top:16px">
+        <div class="sound-btn-demo">
+          <span>❌</span><span style="font-size:.85rem;font-weight:600">Off</span>
+        </div>
+        <div class="sound-btn-demo active">
+          <span>〰️</span><span style="font-size:.85rem;font-weight:600">White Noise</span>
+          <div class="sound-wave">
+            <div class="sound-bar" style="height:8px"></div>
+            <div class="sound-bar" style="height:14px"></div>
+            <div class="sound-bar" style="height:10px"></div>
+            <div class="sound-bar" style="height:16px"></div>
+            <div class="sound-bar" style="height:6px"></div>
+          </div>
+        </div>
+        <div class="sound-btn-demo">
+          <span>🌧️</span><span style="font-size:.85rem;font-weight:600">Rain</span>
+        </div>
+        <div class="sound-btn-demo">
+          <span>🌿</span><span style="font-size:.85rem;font-weight:600">Deep</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ACHIEVEMENTS -->
+<section id="achievements" style="max-width:1200px;margin:0 auto;padding:60px 24px">
+  <span class="section-label">Gamification</span>
+  <h2 class="section-title">22 Achievements to unlock</h2>
+  <p class="section-sub">Bronze · Silver · Gold · Platinum. Every milestone rewarded. From your first entry to a 30-day streak.</p>
+  <div class="ach-showcase" id="achShowcase">
+    <div class="ach-card reveal"><span class="ach-icon">📝</span><div class="ach-name">First Steps</div><div class="ach-desc">Log your very first activity</div><span class="ach-tier tier-bronze">Bronze</span></div>
+    <div class="ach-card reveal"><span class="ach-icon">🍅</span><div class="ach-name">Pomodoro Rookie</div><div class="ach-desc">Complete your first pomodoro</div><span class="ach-tier tier-bronze">Bronze</span></div>
+    <div class="ach-card reveal"><span class="ach-icon">✅</span><div class="ach-name">Task Done!</div><div class="ach-desc">Complete your first task</div><span class="ach-tier tier-bronze">Bronze</span></div>
+    <div class="ach-card reveal"><span class="ach-icon">🔥</span><div class="ach-name">On Fire</div><div class="ach-desc">4 pomodoros in one day</div><span class="ach-tier tier-silver">Silver</span></div>
+    <div class="ach-card reveal"><span class="ach-icon">⚡</span><div class="ach-name">Power Day</div><div class="ach-desc">8 pomodoros in a single day</div><span class="ach-tier tier-gold">Gold</span></div>
+    <div class="ach-card reveal"><span class="ach-icon">🏆</span><div class="ach-name">Task Master</div><div class="ach-desc">Complete 50 tasks total</div><span class="ach-tier tier-gold">Gold</span></div>
+    <div class="ach-card reveal"><span class="ach-icon">🌱</span><div class="ach-name">Seedling</div><div class="ach-desc">3-day logging streak</div><span class="ach-tier tier-bronze">Bronze</span></div>
+    <div class="ach-card reveal"><span class="ach-icon">🚀</span><div class="ach-name">Two Weeks!</div><div class="ach-desc">14-day logging streak</div><span class="ach-tier tier-gold">Gold</span></div>
+    <div class="ach-card reveal"><span class="ach-icon">👑</span><div class="ach-name">Unstoppable</div><div class="ach-desc">30-day logging streak</div><span class="ach-tier tier-platinum">Platinum</span></div>
+    <div class="ach-card reveal"><span class="ach-icon">🍅</span><div class="ach-name">Pomodoro Legend</div><div class="ach-desc">100 pomodoros total</div><span class="ach-tier tier-platinum">Platinum</span></div>
+    <div class="ach-card reveal"><span class="ach-icon">🌅</span><div class="ach-name">Early Bird</div><div class="ach-desc">Log an entry before 8 AM</div><span class="ach-tier tier-silver">Silver</span></div>
+    <div class="ach-card reveal"><span class="ach-icon">🧘</span><div class="ach-name">Deep Focus</div><div class="ach-desc">Track & finish a pomodoro on a task</div><span class="ach-tier tier-silver">Silver</span></div>
+  </div>
+</section>
+
+<!-- SYNC + MULTI PROFILE -->
+<section style="max-width:1200px;margin:0 auto;padding:60px 24px">
+  <div class="cards-grid">
+    <div class="card reveal" style="opacity:0;transform:translateY(24px)">
+      <div class="card-icon">☁️</div>
+      <div class="card-title">Cloud Sync via Firebase</div>
+      <p class="card-desc">Sign in with Google, Email, or Phone. Your data syncs across all devices instantly. Works fully offline too — data lives in localStorage first.</p>
+      <span class="card-tag">REALTIME SYNC</span>
+      <div class="sync-visual" style="margin-top:20px">
+        <div class="sync-node">📱<br><span style="font-size:.7rem;color:var(--muted)">Mobile</span></div>
+        <div class="sync-arrow">⟷</div>
+        <div class="sync-node" style="border-color:var(--v1);box-shadow:0 0 20px rgba(124,58,237,.3)">☁️<br><span style="font-size:.7rem;color:var(--muted)">Firebase</span></div>
+        <div class="sync-arrow">⟷</div>
+        <div class="sync-node">💻<br><span style="font-size:.7rem;color:var(--muted)">Desktop</span></div>
+      </div>
+    </div>
+    <div class="card reveal" style="opacity:0;transform:translateY(24px)">
+      <div class="card-icon">👥</div>
+      <div class="card-title">Multiple Profiles</div>
+      <p class="card-desc">Separate Work, Personal, and Side Project profiles — each with its own logs, timer sessions, achievements, and settings. Switch in one click.</p>
+      <span class="card-tag">MULTI-CONTEXT</span>
+      <div class="profiles-row" style="margin-top:20px">
+        <div class="profile-chip active">
+          <div class="profile-avatar" style="background:#7C3AED;color:#fff">W</div>
+          Work
+        </div>
+        <div class="profile-chip">
+          <div class="profile-avatar" style="background:#0891b2;color:#fff">P</div>
+          Personal
+        </div>
+        <div class="profile-chip">
+          <div class="profile-avatar" style="background:#059669;color:#fff">S</div>
+          Side Project
+        </div>
+      </div>
+    </div>
+    <div class="card reveal" style="opacity:0;transform:translateY(24px)">
+      <div class="card-icon">🌍</div>
+      <div class="card-title">World Clock</div>
+      <p class="card-desc">Live clock in the header with 50+ timezone options. See your time and any remote timezone simultaneously — perfect for remote teams.</p>
+      <span class="card-tag">GLOBAL TIME</span>
+    </div>
+    <div class="card reveal" style="opacity:0;transform:translateY(24px)">
+      <div class="card-icon">👁️</div>
+      <div class="card-title">Eye Comfort Mode</div>
+      <p class="card-desc">Warm amber overlay from Cool White to Candlelight. Slider-controlled. Reduces eye strain during late-night sessions without changing system settings.</p>
+      <span class="card-tag">WELLNESS</span>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<div class="cta-section">
+  <div class="cta-glow"></div>
+  <span class="section-label" style="display:block;margin-bottom:16px">Ready to flow?</span>
+  <h2 class="cta-title">
+    <span style="background:linear-gradient(135deg,#fff,var(--c2));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent">Start your first</span><br>
+    <span style="background:linear-gradient(135deg,var(--c1),var(--cyan));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent">Focus session.</span>
+  </h2>
+  <p class="cta-sub">Free. No sign-up required to start. Sign in only if you want cloud sync across devices.</p>
+  <a href="./app.html" class="btn-primary" style="display:inline-flex;font-size:1.1rem;padding:16px 40px">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="20" height="20"><path d="M8 5v14l11-7z"/></svg>
+    Open DailyFlow
+  </a>
+</div>
+
+<footer>
+  <p>DailyFlow · Built with ❤️ · <a href="./app.html">Launch App</a></p>
+</footer>
+</main>
+
+<script>
+// ── STARFIELD ──────────────────────────────────────────────
+const canvas = document.getElementById('stars');
+const ctx = canvas.getContext('2d');
+let stars = [];
+function resize() {
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+function initStars() {
+  stars = [];
+  for (let i = 0; i < 220; i++) {
+    stars.push({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      r: Math.random() * 1.4 + .2,
+      o: Math.random() * .8 + .2,
+      s: Math.random() * .4 + .05,
+      p: Math.random() * Math.PI * 2
+    });
+  }
+}
+function drawStars(t) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  stars.forEach(s => {
+    const o = s.o * (.6 + .4 * Math.sin(t * s.s + s.p));
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI*2);
+    ctx.fillStyle = `rgba(200,190,255,${o})`;
+    ctx.fill();
+  });
+  requestAnimationFrame(drawStars);
+}
+window.addEventListener('resize', () => { resize(); initStars(); });
+resize(); initStars();
+requestAnimationFrame(drawStars);
+
+// ── HERO WAVE ──────────────────────────────────────────────
+(function() {
+  const path = document.getElementById('heroWavePath');
+  if (!path) return;
+  let t = 0;
+  function wave() {
+    const W = 1440, H = 80;
+    let d = `M0 ${H}`;
+    for (let x = 0; x <= W; x += 4) {
+      const y = H/2 + Math.sin((x/W)*Math.PI*4 + t)*18 + Math.sin((x/W)*Math.PI*7 + t*1.3)*8;
+      d += ` L${x} ${y}`;
+    }
+    d += ` L${W} ${H} Z`;
+    path.setAttribute('d', d);
+    t += 0.012;
+    requestAnimationFrame(wave);
+  }
+  wave();
+})();
+
+// ── HERO TIMER COUNTDOWN ────────────────────────────────────
+(function() {
+  const el = document.getElementById('heroTime');
+  if (!el) return;
+  let secs = 25 * 60;
+  setInterval(() => {
+    secs = Math.max(0, secs - 1);
+    const m = String(Math.floor(secs/60)).padStart(2,'0');
+    const s = String(secs%60).padStart(2,'0');
+    el.textContent = m + ':' + s;
+    if (secs === 0) secs = 25*60;
+  }, 1000);
+})();
+
+// ── DEMO TIMER ──────────────────────────────────────────────
+(function() {
+  const el = document.getElementById('demoTime');
+  const ring = document.getElementById('miniRing');
+  if (!el || !ring) return;
+  let secs = 20*60+15;
+  const total = 25*60;
+  const circ = 2 * Math.PI * 52;
+  setInterval(() => {
+    secs = Math.max(0, secs - 1);
+    const m = String(Math.floor(secs/60)).padStart(2,'0');
+    const s = String(secs%60).padStart(2,'0');
+    el.textContent = m + ':' + s;
+    const pct = secs / total;
+    ring.style.strokeDashoffset = circ * pct;
+    if (secs === 0) secs = 25*60;
+  }, 1000);
+})();
+
+// ── SCROLL REVEAL ──────────────────────────────────────────
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach((e, i) => {
+    if (e.isIntersecting) {
+      setTimeout(() => {
+        e.target.classList.add('visible');
+        // animate count-ups
+        if (e.target.id === 'countUp1' || e.target.closest('.analytics-demo')) {
+          animateCount('countUp1', 0, 342, 1400);
+          animateCount('countUp2', 0, 87, 1600);
+          animateCount('countUp3', 0, 12, 1200);
+        }
+        // animate bars
+        const bars = e.target.querySelectorAll('.bar[data-h]');
+        bars.forEach((b, j) => {
+          setTimeout(() => { b.style.height = b.dataset.h + 'px'; }, j * 80);
+        });
+      }, i * 60);
+      observer.unobserve(e.target);
+    }
+  });
+}, { threshold: 0.15 });
+
+document.querySelectorAll('.reveal, .ach-card').forEach(el => observer.observe(el));
+
+// also observe analytics section
+const statEl = document.querySelector('.analytics-demo');
+if (statEl) observer.observe(statEl);
+const chartEl = document.querySelector('#chartBars');
+if (chartEl) observer.observe(chartEl);
+
+function animateCount(id, from, to, dur) {
+  const el = document.getElementById(id);
+  if (!el || el._counted) return;
+  el._counted = true;
+  const start = performance.now();
+  function step(now) {
+    const p = Math.min(1, (now - start) / dur);
+    const ease = 1 - Math.pow(1 - p, 3);
+    el.textContent = Math.round(from + (to - from) * ease);
+    if (p < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+// ── CHART BARS on scroll ───────────────────────────────────
+const chartObserver = new IntersectionObserver((entries) => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      e.target.querySelectorAll('.bar[data-h]').forEach((b, i) => {
+        setTimeout(() => { b.style.height = b.dataset.h + 'px'; }, i * 100);
+      });
+      chartObserver.unobserve(e.target);
+    }
+  });
+}, { threshold: 0.3 });
+const cb = document.getElementById('chartBars');
+if (cb) chartObserver.observe(cb);
+
+// ── TAB SWITCHER DEMO ──────────────────────────────────────
+document.querySelectorAll('.tab-demo').forEach(btn => {
+  btn.addEventListener('click', () => {
+    btn.parentElement.querySelectorAll('.tab-demo').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+// ── SOUND BTN DEMO ────────────────────────────────────────
+document.querySelectorAll('.sound-btn-demo').forEach(btn => {
+  btn.addEventListener('click', () => {
+    btn.closest('.ambient-demo').querySelectorAll('.sound-btn-demo').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+</script>
+</body>
+</html>

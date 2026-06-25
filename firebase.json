@@ -1,0 +1,35 @@
+{
+  "hosting": {
+    "public": ".",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**",
+      "*.json",
+      "*.js.map",
+      "get_config.js",
+      "sdk-config-raw.json",
+      "firebase-sdk-config.json",
+      "firebase-config-output.js"
+    ]
+  },
+  "auth": {
+    "providers": {
+      "emailPassword": true,
+      "googleSignIn": {
+        "oAuthBrandDisplayName": "DailyFlow",
+        "supportEmail": "venkatasainadh.duppalapudi@gmail.com"
+      }
+    },
+    "authorizedDomains": [
+      "dailyflow-9a13e.firebaseapp.com",
+      "dailyflow-9a13e.web.app",
+      "sainadh.com",
+      "localhost"
+    ]
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  }
+}

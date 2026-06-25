@@ -1,0 +1,969 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#7C3AED" />
+  <meta name="description" content="Daily activity log with Pomodoro timer" />
+  <title>DailyFlow</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="style.css" />
+
+  <!-- ── Firebase SDK (modular, project: dailyflow-9a13e) ── -->
+  <script type="module" src="firebase-init.js"></script>
+</head>
+<body>
+
+<!-- ── Login Screen ─────────────────────────────────── -->
+<div class="login-screen" id="loginScreen">
+  <div class="login-card">
+
+    <div class="login-logo">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24" fill="white" width="22" height="22"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm.5 5v5.25l4.5 2.67-.75 1.23L11 13V7h1.5z"/></svg>
+      </div>
+      <span class="logo-text">DailyFlow</span>
+    </div>
+    <h2>Welcome</h2>
+    <p>Sign in to sync your data across all your devices.</p>
+
+    <!-- Tab switcher -->
+    <div class="auth-tabs">
+      <button class="auth-tab active" data-tab="google">Google</button>
+      <button class="auth-tab" data-tab="email">Email</button>
+      <button class="auth-tab" data-tab="phone">Phone</button>
+    </div>
+
+    <!-- Google tab -->
+    <div class="auth-panel active" id="tab-google">
+      <button class="google-signin-btn" id="googleSignInBtn">
+        <svg width="18" height="18" viewBox="0 0 48 48">
+          <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+          <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+          <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+          <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.36-8.16 2.36-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+        </svg>
+        Continue with Google
+      </button>
+    </div>
+
+    <!-- Email tab -->
+    <div class="auth-panel" id="tab-email">
+      <div class="auth-mode-toggle">
+        <button class="auth-mode-btn active" id="emailSignInMode">Sign In</button>
+        <button class="auth-mode-btn" id="emailSignUpMode">Sign Up</button>
+      </div>
+      <input class="auth-input" type="email"    id="emailInput"    placeholder="Email address" autocomplete="email" />
+      <input class="auth-input" type="password" id="passwordInput" placeholder="Password" autocomplete="current-password" />
+      <input class="auth-input" style="display:none" type="password" id="confirmPasswordInput" placeholder="Confirm password" autocomplete="new-password" />
+      <button class="primary-btn auth-submit-btn" id="emailSubmitBtn" style="width:100%;justify-content:center">Sign In</button>
+      <button class="link-btn" id="forgotPasswordBtn" style="margin-top:8px;text-align:center;width:100%">Forgot password?</button>
+    </div>
+
+    <!-- Phone tab -->
+    <div class="auth-panel" id="tab-phone">
+      <div id="phone-step-1">
+        <input class="auth-input" type="tel" id="phoneInput" placeholder="+91 98765 43210" autocomplete="tel" />
+        <button class="primary-btn auth-submit-btn" id="sendOtpBtn" style="width:100%;justify-content:center">Send OTP</button>
+        <!-- Invisible reCAPTCHA anchor — hidden from user -->
+        <div id="recaptcha-container" style="display:none"></div>
+      </div>
+      <div id="phone-step-2" style="display:none">
+        <p style="font-size:.85rem;color:var(--text-muted);margin-bottom:12px">Enter the 6-digit code sent to <strong id="phoneSentTo"></strong></p>
+        <input class="auth-input" type="text" id="otpInput" placeholder="6-digit OTP" maxlength="6" autocomplete="one-time-code" inputmode="numeric" />
+        <button class="primary-btn auth-submit-btn" id="verifyOtpBtn" style="width:100%;justify-content:center">Verify & Sign In</button>
+        <button class="link-btn" id="resendOtpBtn" style="margin-top:8px;text-align:center;width:100%">Resend OTP</button>
+      </div>
+    </div>
+
+    <p class="login-error" id="loginError"></p>
+
+  </div>
+</div>
+
+<div class="app">
+
+  <!-- ── Header ───────────────────────────────────── -->
+  <header class="header">
+    <!-- Wave fill: div controls clip via overflow:hidden, SVG draws the waves inside -->
+    <div class="header-wave-wrap" id="headerWaveWrap">
+      <div class="header-wave-bg"></div>
+      <svg class="header-wave-svg" id="headerWaveSvg" xmlns="http://www.w3.org/2000/svg">
+        <path id="wfPath1" class="wf-1"/>
+        <path id="wfPath2" class="wf-2"/>
+      </svg>
+    </div>
+    <div class="logo">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24" fill="white"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm.5 5v5.25l4.5 2.67-.75 1.23L11 13V7h1.5z"/></svg>
+      </div>
+      <span class="logo-text">DailyFlow</span>
+      <div class="hdr-clock local-clock">
+        <div class="clock-time">
+          <span class="ct-hm" id="lHM">12:00</span>
+          <span class="ct-sep" id="lSep">:</span>
+          <span class="ct-s"  id="lS">00</span>
+          <span class="ct-ap" id="lAP">AM</span>
+        </div>
+        <div class="clock-sub">
+          <span class="cs-date" id="lDate">Mon, Jan 1</span>
+          <span class="tz-pill" id="lTZ">UTC</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Profile Selector -->
+    <div class="profile-sel" id="profileSel">
+      <button class="profile-btn" id="profileBtn">
+        <span class="p-avatar" id="pAvatarBtn" style="background:var(--primary)">👤</span>
+        <span class="p-name"   id="pNameBtn">Personal</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="11" height="11"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="profile-drop" id="profileDrop">
+        <div class="profile-drop-label">Switch Profile</div>
+        <div id="profileDropList"></div>
+        <div class="profile-drop-footer">
+          <button class="outline-btn" id="newProfileBtn" style="width:100%;justify-content:center">
+            + New Profile
+          </button>
+        </div>
+        <!-- Sign out section — shown only when Firebase user is signed in -->
+        <div class="profile-drop-signout" id="profileDropSignout" style="display:none">
+          <div class="profile-drop-divider"></div>
+          <div class="profile-drop-user" id="profileDropUser"></div>
+          <button class="profile-drop-signout-btn" id="signOutBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            Sign out
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <nav class="main-nav">
+      <button class="nav-btn active" data-view="log">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+        Log
+      </button>
+      <button class="nav-btn" data-view="analytics">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+        Analytics
+      </button>
+      <button class="nav-btn" data-view="settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Settings
+      </button>
+    </nav>
+
+    <div class="header-right">
+      <!-- World Clock -->
+      <div class="hdr-clock world-clock">
+        <div class="wc-top">
+          <svg class="wc-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          <select class="wc-select" id="tzSelect" title="Choose timezone">
+          <optgroup label="── Local ──">
+            <option value="local">My local time</option>
+          </optgroup>
+          <optgroup label="Americas">
+            <option value="America/New_York">New York (EST/EDT)</option>
+            <option value="America/Chicago">Chicago (CST/CDT)</option>
+            <option value="America/Denver">Denver (MST/MDT)</option>
+            <option value="America/Los_Angeles">Los Angeles (PST/PDT)</option>
+            <option value="America/Toronto">Toronto</option>
+            <option value="America/Vancouver">Vancouver</option>
+            <option value="America/Sao_Paulo">São Paulo (BRT)</option>
+            <option value="America/Argentina/Buenos_Aires">Buenos Aires (ART)</option>
+            <option value="America/Mexico_City">Mexico City (CST)</option>
+          </optgroup>
+          <optgroup label="Europe">
+            <option value="UTC">UTC / GMT</option>
+            <option value="Europe/London">London (GMT/BST)</option>
+            <option value="Europe/Paris">Paris (CET/CEST)</option>
+            <option value="Europe/Berlin">Berlin (CET/CEST)</option>
+            <option value="Europe/Amsterdam">Amsterdam</option>
+            <option value="Europe/Rome">Rome</option>
+            <option value="Europe/Madrid">Madrid</option>
+            <option value="Europe/Moscow">Moscow (MSK)</option>
+            <option value="Europe/Istanbul">Istanbul (TRT)</option>
+            <option value="Europe/Kiev">Kyiv (EET)</option>
+          </optgroup>
+          <optgroup label="Africa &amp; Middle East">
+            <option value="Africa/Cairo">Cairo (EET)</option>
+            <option value="Africa/Johannesburg">Johannesburg (SAST)</option>
+            <option value="Africa/Lagos">Lagos (WAT)</option>
+            <option value="Africa/Nairobi">Nairobi (EAT)</option>
+            <option value="Asia/Dubai">Dubai (GST)</option>
+            <option value="Asia/Riyadh">Riyadh (AST)</option>
+            <option value="Asia/Tehran">Tehran (IRST)</option>
+          </optgroup>
+          <optgroup label="Asia">
+            <option value="Asia/Karachi">Karachi (PKT)</option>
+            <option value="Asia/Kolkata">India (IST)</option>
+            <option value="Asia/Colombo">Colombo (SLST)</option>
+            <option value="Asia/Dhaka">Dhaka (BST)</option>
+            <option value="Asia/Kathmandu">Kathmandu (NPT)</option>
+            <option value="Asia/Tashkent">Tashkent (UZT)</option>
+            <option value="Asia/Bangkok">Bangkok (ICT)</option>
+            <option value="Asia/Singapore">Singapore (SGT)</option>
+            <option value="Asia/Kuala_Lumpur">Kuala Lumpur (MYT)</option>
+            <option value="Asia/Shanghai">China (CST)</option>
+            <option value="Asia/Hong_Kong">Hong Kong (HKT)</option>
+            <option value="Asia/Tokyo">Tokyo (JST)</option>
+            <option value="Asia/Seoul">Seoul (KST)</option>
+          </optgroup>
+          <optgroup label="Pacific">
+            <option value="Australia/Perth">Perth (AWST)</option>
+            <option value="Australia/Adelaide">Adelaide (ACST)</option>
+            <option value="Australia/Sydney">Sydney (AEST/AEDT)</option>
+            <option value="Australia/Melbourne">Melbourne</option>
+            <option value="Pacific/Auckland">Auckland (NZST)</option>
+            <option value="Pacific/Honolulu">Honolulu (HST)</option>
+          </optgroup>
+        </select>
+        </div>
+        <div class="clock-time">
+          <span class="ct-hm ct-purple" id="tzHM">--:--</span>
+          <span class="ct-sep ct-purple" id="tzSep">:</span>
+          <span class="ct-s  ct-purple" id="tzS">--</span>
+          <span class="ct-ap ct-purple" id="tzAP">--</span>
+        </div>
+        <div class="clock-sub">
+          <span class="cs-date" id="tzAbbrSpan">Select timezone</span>
+          <span class="tz-diff" id="tzDiff"></span>
+        </div>
+      </div>
+
+      <!-- Eye Comfort dropdown -->
+      <div class="warm-drop-wrap" id="warmDropWrap">
+        <button class="icon-btn" id="warmDropBtn" title="Eye comfort / warm light">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+            <circle cx="12" cy="12" r="3"/>
+          </svg>
+        </button>
+        <div class="warm-dropdown" id="warmDropdown">
+          <div class="warm-drop-header">
+            <span class="warm-drop-title">Eye Comfort</span>
+            <span class="warm-label" id="warmLabel">Cool white</span>
+          </div>
+          <div class="eye-row">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              width="14" height="14"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+            <input type="range" class="warm-slider" id="warmSlider" min="0" max="100" value="0" />
+            <svg viewBox="0 0 24 24" fill="none" stroke="#D97706" stroke-width="2.5"
+              width="17" height="17"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+          </div>
+          <div class="warm-steps">
+            <span>Cool</span><span>Warm</span><span>Candlelight</span>
+          </div>
+          <p class="warm-drop-note" id="warmDropNote"></p>
+        </div>
+      </div>
+
+      <!-- User account menu — shown only when signed in -->
+      <div class="user-menu-wrap" id="userMenuWrap" style="display:none">
+        <button class="icon-btn user-menu-btn" id="userMenuBtn" title="Account">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        </button>
+        <div class="user-menu-drop" id="userMenuDrop">
+          <div class="user-menu-email" id="userMenuEmail"></div>
+          <div class="user-menu-divider"></div>
+          <button class="user-menu-signout-btn" id="headerSignOutBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            Sign out
+          </button>
+        </div>
+      </div>
+
+      <button class="icon-btn" id="shortcutsBtn" title="Keyboard shortcuts">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/></svg>
+      </button>
+      <button class="icon-btn" id="themeToggle" title="Toggle dark mode">
+        <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        <svg class="moon-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+
+      <!-- user menu moved into profile dropdown -->
+    </div>
+  </header>
+
+  <main class="main">
+
+    <!-- ── Sidebar ──────────────────────────────────── -->
+    <aside class="sidebar" id="sidebar">
+
+      <!-- Timer -->
+      <div class="card timer-card" data-panel="timer">
+        <div class="drag-grip" title="Drag to reorder"><span class="drag-grip-icon">&#8942;&#8942;</span><span class="drag-grip-label">TIMER</span></div>
+        <div class="mode-tabs">
+          <button class="tab active" data-mode="work">Work</button>
+          <button class="tab" data-mode="shortBreak">Short Break</button>
+          <button class="tab" data-mode="longBreak">Long Break</button>
+        </div>
+        <div class="timer-wrap">
+          <svg class="ring-svg" viewBox="0 0 220 220">
+            <circle class="ring-bg" cx="110" cy="110" r="96"/>
+            <circle class="ring-fg" id="timerRing" cx="110" cy="110" r="96"/>
+          </svg>
+          <div class="timer-inner">
+            <span class="timer-time" id="timerTime">25:00</span>
+            <span class="timer-label" id="timerLabel">Focus Time</span>
+          </div>
+        </div>
+        <div class="timer-controls">
+          <button class="icon-btn ctrl-btn" id="resetBtn" title="Reset (R)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+          </button>
+          <button class="play-btn" id="playBtn">
+            <svg class="play-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            <svg class="pause-icon" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+            <span id="playText">Start</span>
+          </button>
+          <button class="icon-btn ctrl-btn" id="skipBtn" title="Skip">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+          </button>
+        </div>
+        <div class="pomodoro-dots" id="dotsRow"></div>
+        <p class="cycle-info" id="cycleInfo">Session 1 of 4 · 0 done today</p>
+      </div>
+
+      <!-- Today Stats -->
+      <div class="card stats-card" data-panel="stats">
+        <div class="drag-grip" title="Drag to reorder"><span class="drag-grip-icon">&#8942;&#8942;</span><span class="drag-grip-label">TODAY</span></div>
+        <p class="card-label">Today</p>
+        <div class="stats-row">
+          <div class="stat-box"><span class="stat-num" id="sEntries">0</span><span class="stat-name">Entries</span></div>
+          <div class="stat-box"><span class="stat-num" id="sPomodos">0</span><span class="stat-name">Pomodoros</span></div>
+          <div class="stat-box"><span class="stat-num" id="sFocus">0m</span><span class="stat-name">Focus</span></div>
+        </div>
+      </div>
+
+      <!-- Ghost Tasks Drawer -->
+      <div class="card ghost-drawer-card" id="ghostDrawerCard" data-panel="ghosts">
+        <div class="drag-grip" title="Drag to reorder"><span class="drag-grip-icon">&#8942;&#8942;</span><span class="drag-grip-label">GHOSTS</span></div>
+        <div class="ghost-drawer-hdr" onclick="toggleGhostDrawer()">
+          <span class="ghost-drawer-hdr-icon">&#128123;</span>
+          <span class="ghost-drawer-hdr-label">Abandoned Tasks</span>
+          <span class="ghost-drawer-count-badge" id="ghostDrawerCount">0</span>
+          <span class="ghost-drawer-chevron" id="ghostDrawerChevron">&#9654;</span>
+        </div>
+        <div id="ghostDrawerBody" style="display:none"></div>
+      </div>
+
+      <!-- Ambient Sound -->
+      <div class="card ambient-card" data-panel="ambient">
+        <div class="drag-grip" title="Drag to reorder"><span class="drag-grip-icon">&#8942;&#8942;</span><span class="drag-grip-label">AMBIENT</span></div>
+        <p class="card-label">Ambient Sound</p>
+        <div class="amb-btns">
+          <button class="amb-btn active" data-sound="none">Off</button>
+          <button class="amb-btn" data-sound="white">〰 White</button>
+          <button class="amb-btn" data-sound="rain">🌧 Rain</button>
+          <button class="amb-btn" data-sound="brown">🌿 Deep</button>
+        </div>
+        <div class="vol-row">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/></svg>
+          <input type="range" class="vol-slider" id="volSlider" min="0" max="100" value="40" />
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+        </div>
+      </div>
+
+      <!-- Quick Notes -->
+      <div class="card qnotes-card" data-panel="qnotes">
+        <div class="drag-grip" title="Drag to reorder"><span class="drag-grip-icon">&#8942;&#8942;</span><span class="drag-grip-label">NOTES</span></div>
+        <div class="qn-header">
+          <p class="card-label" style="margin-bottom:0">Quick Notes</p>
+          <button class="icon-btn qn-add-btn" id="qnAddBtn" title="New quick note (Q)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+        </div>
+        <div id="qnotesList" class="qnotes-list"></div>
+      </div>
+
+      <!-- Calendar -->
+      <div class="card cal-card" data-panel="calendar">
+        <div class="drag-grip" title="Drag to reorder"><span class="drag-grip-icon">&#8942;&#8942;</span><span class="drag-grip-label">CALENDAR</span></div>
+        <p class="card-label">Jump to Date</p>
+        <div id="calContainer"></div>
+      </div>
+
+    </aside>
+
+    <!-- ── Content ──────────────────────────────────── -->
+    <div class="content">
+
+      <!-- LOG VIEW -->
+      <section id="v-log" class="view active">
+
+        <div class="log-toolbar">
+          <div class="date-nav">
+            <button class="icon-btn nav-arrow" id="prevDay">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+            </button>
+            <div class="date-info">
+              <span class="date-main" id="dateMain">Today</span>
+              <span class="date-sub" id="dateSub"></span>
+            </div>
+            <button class="icon-btn nav-arrow" id="nextDay">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+            <button class="outline-btn" id="todayBtn">Today</button>
+          </div>
+          <div class="search-area">
+            <div class="search-wrap">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input class="search-input" id="searchInput" type="text" placeholder="Search entries…" autocomplete="off" />
+            </div>
+            <select class="filter-sel" id="filterCat">
+              <option value="">All categories</option>
+              <option value="work">💼 Work</option>
+              <option value="personal">🏠 Personal</option>
+              <option value="health">💪 Health</option>
+              <option value="study">📚 Study</option>
+              <option value="creative">🎨 Creative</option>
+              <option value="other">✨ Other</option>
+            </select>
+            <select class="filter-sel" id="filterPri">
+              <option value="">All priorities</option>
+              <option value="high">🔴 High</option>
+              <option value="medium">🟡 Medium</option>
+              <option value="low">🟢 Low</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="card add-card">
+
+          <!-- ── Command line ── -->
+          <div class="cmd-bar">
+            <span class="cmd-prompt">›_</span>
+            <input class="cmd-input" id="entryInput" type="text"
+              placeholder="What are you working on? #tags supported" autocomplete="off" />
+            <input class="entry-date-pick" id="entryDate" type="date" title="Choose date" />
+            <button class="cmd-add-btn" id="addBtn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              LOG
+            </button>
+          </div>
+
+          <!-- ── Meta chips row ── -->
+          <div class="cmd-meta-row">
+            <div class="cmd-chip-group">
+              <span class="cmd-chip-label">CATEGORY</span>
+              <select class="cmd-chip-sel" id="catSel">
+                <option value="work">💼 Work</option>
+                <option value="personal">🏠 Personal</option>
+                <option value="health">💪 Health</option>
+                <option value="study">📚 Study</option>
+                <option value="creative">🎨 Creative</option>
+                <option value="other">✨ Other</option>
+              </select>
+            </div>
+            <div class="cmd-chip-group">
+              <span class="cmd-chip-label">PRIORITY</span>
+              <select class="cmd-chip-sel" id="priSel">
+                <option value="none">— none</option>
+                <option value="high">🔴 High</option>
+                <option value="medium">🟡 Medium</option>
+                <option value="low">🟢 Low</option>
+              </select>
+            </div>
+            <div class="cmd-meta-divider"></div>
+            <button class="cmd-toggle-btn" id="toggleDesc" data-active="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              Notes
+            </button>
+            <button class="cmd-toggle-btn" id="toggleNewSt" data-active="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+              Sub-tasks
+            </button>
+            <button class="cmd-toggle-btn" id="toggleNewCat" data-active="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              New Category
+            </button>
+          </div>
+
+          <!-- ── Notes panel ── -->
+          <div class="cmd-panel" id="descRow" style="display:none">
+            <div class="cmd-panel-label">// NOTES</div>
+            <textarea class="cmd-textarea" id="descInput" placeholder="Add context, links, or notes…" rows="2"></textarea>
+          </div>
+
+          <!-- ── Sub-tasks panel ── -->
+          <div class="cmd-panel" id="newStList" style="display:none"></div>
+
+          <!-- ── Inline new category panel ── -->
+          <div class="cmd-panel" id="newCatPanel" style="display:none">
+            <div class="cmd-panel-label">// NEW CATEGORY</div>
+            <div class="inline-newcat-row">
+              <input class="inline-newcat-emoji" id="inlineCatEmoji" maxlength="2" placeholder="😀" />
+              <input class="inline-newcat-name" id="inlineCatName" maxlength="20" placeholder="Category name…"
+                onkeydown="if(event.key==='Enter') addCatInline()" />
+              <div class="inline-cat-swatches" id="inlineCatSwatches"></div>
+              <input type="hidden" id="inlineCatColor" value="#3B82F6" />
+            </div>
+            <div style="display:flex;gap:6px;margin-top:8px">
+              <button class="primary-btn sm-btn" onclick="addCatInline()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><polyline points="20 6 9 17 4 12"/></svg>
+                Create
+              </button>
+              <button class="outline-btn sm-btn" onclick="toggleNewCatPanel(false)">Cancel</button>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="session-banner" id="sessionBanner" style="display:none">
+          <span>🍅 Tracking:</span>
+          <strong id="bannerTask">—</strong>
+          <span class="banner-poms" id="bannerPoms">0 pomodoros</span>
+          <button class="banner-stop" id="bannerStop">Stop tracking</button>
+        </div>
+
+        <div id="ghostBanner" class="ghost-banner" style="display:none"></div>
+
+        <div id="log"></div>
+      </section>
+
+      <!-- ANALYTICS VIEW -->
+      <section id="v-analytics" class="view">
+        <div class="analytics-top">
+          <div class="card streak-card">
+            <div class="streak-body">
+              <div class="streak-num" id="streakNum">0</div>
+              <div>
+                <div class="streak-lbl">Day Streak 🔥</div>
+                <div class="streak-detail" id="streakDetail">Start logging to build your streak</div>
+              </div>
+            </div>
+          </div>
+          <div class="card all-time-card">
+            <p class="card-label">All Time</p>
+            <div class="stats-row">
+              <div class="stat-box"><span class="stat-num" id="atEntries">0</span><span class="stat-name">Entries</span></div>
+              <div class="stat-box"><span class="stat-num" id="atPomodos">0</span><span class="stat-name">Pomodoros</span></div>
+              <div class="stat-box"><span class="stat-num" id="atDays">0</span><span class="stat-name">Days</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Achievements -->
+        <div class="card ach-card-wrap">
+          <div class="ach-header">
+            <p class="card-label" style="margin-bottom:0">Achievements</p>
+            <span class="ach-count" id="achCount">0 / 22 unlocked</span>
+          </div>
+          <div class="ach-overall-bar"><div class="ach-fill" id="achFill"></div></div>
+          <div class="ach-grid" id="achGrid"></div>
+        </div>
+
+        <div class="card chart-card">
+          <div class="chart-header">
+            <p class="card-label">Last 7 Days</p>
+            <div class="chart-legend">
+              <span class="legend-dot" style="background:var(--primary);opacity:.45"></span><span>Entries</span>
+              <span class="legend-dot" style="background:var(--primary)"></span><span>Pomodoros</span>
+            </div>
+          </div>
+          <svg id="weeklyChart" class="bar-svg" viewBox="0 0 680 260" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+
+        <div class="charts-row">
+          <div class="card chart-card">
+            <p class="card-label">Category Breakdown (All Time)</p>
+            <div class="pie-wrap">
+              <svg id="pieChart" class="pie-svg" viewBox="0 0 200 200"></svg>
+              <div id="pieLegend" class="pie-legend"></div>
+            </div>
+          </div>
+          <div class="card chart-card">
+            <p class="card-label">Top Tags</p>
+            <div id="tagCloud" class="tag-cloud"></div>
+          </div>
+        </div>
+
+        <div class="card chart-card">
+          <p class="card-label">Activity — Last 16 Weeks</p>
+          <div class="heatmap-scroll">
+            <div id="heatmap" class="heatmap-grid"></div>
+          </div>
+          <div class="heatmap-legend">
+            <span>Less</span>
+            <span class="hcell" data-level="0"></span>
+            <span class="hcell" data-level="1"></span>
+            <span class="hcell" data-level="2"></span>
+            <span class="hcell" data-level="3"></span>
+            <span class="hcell" data-level="4"></span>
+            <span>More</span>
+          </div>
+        </div>
+
+        <!-- Interactive Day Detail (shown when a date is clicked) -->
+        <div class="card analytics-detail-card" id="analyticsDayDetail" style="display:none">
+          <div class="detail-header">
+            <div>
+              <div class="detail-date-lbl" id="detailDateLbl">—</div>
+              <div class="detail-sub-lbl" id="detailSubLbl"></div>
+            </div>
+            <div class="detail-actions">
+              <button class="outline-btn" id="detailGoToLog">Open in Log →</button>
+              <button class="icon-btn" id="detailClose" title="Close">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+          </div>
+          <div id="detailEntriesList" class="detail-entries-list"></div>
+        </div>
+
+        <div class="card data-card">
+
+          <!-- Date range export -->
+          <p class="card-label">Export by Date Range</p>
+          <div class="range-export">
+            <div class="range-dates">
+              <div class="range-field">
+                <label class="range-lbl">From</label>
+                <input type="date" id="exportFrom" class="range-input" />
+              </div>
+              <span class="range-arrow">→</span>
+              <div class="range-field">
+                <label class="range-lbl">To</label>
+                <input type="date" id="exportTo" class="range-input" />
+              </div>
+            </div>
+            <div class="range-presets">
+              <button class="preset-btn" onclick="setRangePreset('today')">Today</button>
+              <button class="preset-btn" onclick="setRangePreset('week')">This week</button>
+              <button class="preset-btn" onclick="setRangePreset('lastweek')">Last week</button>
+              <button class="preset-btn" onclick="setRangePreset('7days')">Last 7 days</button>
+              <button class="preset-btn" onclick="setRangePreset('month')">This month</button>
+            </div>
+            <div class="range-format">
+              <label class="fmt-opt"><input type="radio" name="exportFmt" value="md" checked /> <span>📄 Markdown (.md)</span></label>
+              <label class="fmt-opt"><input type="radio" name="exportFmt" value="xlsx" /> <span>📊 Excel (.xlsx)</span></label>
+            </div>
+            <button class="primary-btn" id="exportRangeBtn" style="width:100%;justify-content:center;margin-top:4px">
+              ⬇ Export Selected Range
+            </button>
+          </div>
+
+          <div class="data-divider"></div>
+          <p class="card-label">Full Backup</p>
+          <div class="data-actions">
+            <button class="outline-btn" id="exportJsonBtn">⬇ JSON</button>
+            <button class="outline-btn" id="exportCsvBtn">⬇ CSV</button>
+            <button class="outline-btn" id="importBtn">⬆ Import</button>
+            <input type="file" id="importFile" accept=".json" style="display:none" />
+          </div>
+        </div>
+      </section>
+
+      <!-- SETTINGS VIEW -->
+      <section id="v-settings" class="view">
+        <div class="settings-grid">
+
+          <div class="card settings-card">
+            <p class="card-label">Timer Durations</p>
+            <div class="setting-row">
+              <label for="s-work">Work session (min)</label>
+              <input type="number" id="s-work" class="setting-input" min="1" max="120" value="25" />
+            </div>
+            <div class="setting-row">
+              <label for="s-short">Short break (min)</label>
+              <input type="number" id="s-short" class="setting-input" min="1" max="30" value="5" />
+            </div>
+            <div class="setting-row">
+              <label for="s-long">Long break (min)</label>
+              <input type="number" id="s-long" class="setting-input" min="1" max="60" value="15" />
+            </div>
+            <div class="setting-row">
+              <label for="s-interval">Long break every N sessions</label>
+              <input type="number" id="s-interval" class="setting-input" min="2" max="10" value="4" />
+            </div>
+          </div>
+
+          <div class="card settings-card">
+            <p class="card-label">Behavior</p>
+            <div class="setting-toggle">
+              <span>Auto-start breaks</span>
+              <label class="toggle-label"><input type="checkbox" id="s-autoBreak" /><span class="toggle-slider"></span></label>
+            </div>
+            <div class="setting-toggle">
+              <span>Auto-start work after break</span>
+              <label class="toggle-label"><input type="checkbox" id="s-autoWork" /><span class="toggle-slider"></span></label>
+            </div>
+            <div class="setting-toggle">
+              <span>Desktop notifications</span>
+              <label class="toggle-label"><input type="checkbox" id="s-notifs" /><span class="toggle-slider"></span></label>
+            </div>
+            <div class="setting-toggle">
+              <span>End-of-day summary</span>
+              <label class="toggle-label"><input type="checkbox" id="s-eod" checked /><span class="toggle-slider"></span></label>
+            </div>
+            <div class="setting-toggle">
+              <span>Collapse roll history by default
+                <span class="setting-hint">ON = history hidden on all tasks, expand per task with ▸ &nbsp;·&nbsp; OFF = history always expanded on all tasks</span>
+              </span>
+              <label class="toggle-label"><input type="checkbox" id="s-rollCollapse" checked /><span class="toggle-slider"></span></label>
+            </div>
+            <div class="setting-toggle">
+              <span>Auto-carry incomplete tasks
+                <span class="setting-hint">Tasks flagged ↺ roll to the next day automatically. You'll be asked for time spent each morning.</span>
+              </span>
+              <label class="toggle-label"><input type="checkbox" id="s-autoRollover" /><span class="toggle-slider"></span></label>
+            </div>
+          </div>
+
+        </div>
+        <div class="card settings-card" style="grid-column:1/-1">
+          <p class="card-label">Custom Categories</p>
+          <div id="catGrid"></div>
+        </div>
+
+        <div class="settings-actions" style="grid-column:1/-1">
+          <button class="primary-btn" id="saveSettings">Save Settings</button>
+          <span class="save-msg" id="saveMsg" style="display:none">✓ Saved!</span>
+        </div>
+
+        <!-- ── NEW CUSTOMISATION CARDS ─────────────────── -->
+
+        <!-- Appearance -->
+        <div class="card settings-card">
+          <p class="card-label">Appearance</p>
+          <div class="setting-row">
+            <label for="s-accent">Accent colour</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="color" id="s-accent" class="setting-color" value="#7C3AED" />
+              <button class="outline-btn s-accent-reset" id="s-accentReset" style="padding:3px 8px;font-size:.75rem">Reset</button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <label for="s-fontsize">Font size</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="range" id="s-fontsize" min="13" max="20" step="1" value="16" class="setting-range" />
+              <span id="s-fontsizeVal" style="font-size:.8rem;color:var(--text2);min-width:32px">16px</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Timer experience -->
+        <div class="card settings-card">
+          <p class="card-label">Timer experience</p>
+          <div class="setting-row">
+            <label for="s-sound">Timer sound</label>
+            <select id="s-sound" class="setting-sel">
+              <option value="beep">🔔 Beep (default)</option>
+              <option value="bell">🔕 Bell</option>
+              <option value="soft">🎵 Soft chime</option>
+              <option value="none">🔇 Silent</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <label for="s-ring">Ring style</label>
+            <select id="s-ring" class="setting-sel">
+              <option value="solid">● Solid</option>
+              <option value="dashed">◌ Dashed</option>
+              <option value="thin">— Thin</option>
+            </select>
+          </div>
+          <div class="setting-toggle">
+            <span>Focus mode (hide sidebar while working)</span>
+            <label class="toggle-label"><input type="checkbox" id="s-focusMode" /><span class="toggle-slider"></span></label>
+          </div>
+          <div class="setting-row">
+            <label for="s-goal">Daily pomodoro goal <span style="color:var(--text3);font-size:.8em">(0 = off)</span></label>
+            <input type="number" id="s-goal" class="setting-input" min="0" max="50" value="0" />
+          </div>
+        </div>
+
+        <!-- Display -->
+        <div class="card settings-card">
+          <p class="card-label">Display</p>
+          <div class="setting-toggle">
+            <span>24-hour clock</span>
+            <label class="toggle-label"><input type="checkbox" id="s-24h" /><span class="toggle-slider"></span></label>
+          </div>
+          <div class="setting-toggle">
+            <span>Week starts on Sunday</span>
+            <label class="toggle-label"><input type="checkbox" id="s-weekSun" /><span class="toggle-slider"></span></label>
+          </div>
+          <div class="setting-row">
+            <label for="s-defcat">Default entry category</label>
+            <select id="s-defcat" class="setting-sel">
+              <!-- populated dynamically by populateCatSelects() — respects deleted cats -->
+            </select>
+          </div>
+          <div class="setting-row">
+            <label for="s-ghostDisplay">
+              Ghost task display
+              <span class="setting-hint">How to show tasks abandoned in past days</span>
+            </label>
+            <select id="s-ghostDisplay" class="setting-sel">
+              <option value="both">👻 Banner + Sidebar drawer</option>
+              <option value="banner">📋 Log banner only</option>
+              <option value="drawer">🗂 Sidebar drawer only</option>
+              <option value="off">✗ Off</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Account / Sign out — shown only when signed in -->
+        <div class="card settings-card" id="settingsAccountCard" style="grid-column:1/-1;display:none">
+          <p class="card-label">Account</p>
+          <p class="settings-signed-in-as" id="settingsSignedInAs"></p>
+          <button class="outline-btn settings-signout-btn" id="settingsSignOutBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            Sign out
+          </button>
+        </div>
+      </section>
+
+    </div><!-- .content -->
+  </main>
+</div><!-- .app -->
+
+<!-- ── Create Profile Modal ───────────────────────── -->
+<div class="modal-overlay" id="createProfileModal">
+  <div class="modal create-profile-modal">
+    <div class="modal-header">
+      <h2>Create New Profile</h2>
+      <button class="icon-btn" id="closeCreateProfile">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <!-- Live preview -->
+    <div class="profile-preview">
+      <div class="profile-preview-avatar" id="previewAvatar">👤</div>
+      <div class="profile-preview-name"   id="previewName">My Profile</div>
+    </div>
+
+    <!-- Name -->
+    <div class="cp-field">
+      <label class="cp-label">Profile name</label>
+      <input class="new-cat-name" id="newProfileName" maxlength="20"
+        placeholder="e.g. Work, Personal, Side Projects…" />
+    </div>
+
+    <!-- Emoji -->
+    <div class="cp-field">
+      <label class="cp-label">Choose icon</label>
+      <div class="profile-emoji-grid" id="profileEmojiGrid"></div>
+    </div>
+
+    <!-- Color -->
+    <div class="cp-field">
+      <label class="cp-label">Choose color</label>
+      <div class="cat-swatches" id="profileColorGrid"></div>
+    </div>
+
+    <div class="cp-actions">
+      <button class="primary-btn" id="submitCreateProfile" style="flex:1;justify-content:center">
+        Create Profile
+      </button>
+      <button class="outline-btn" onclick="closeModal('createProfileModal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modals ──────────────────────────────────────── -->
+<div class="modal-overlay" id="shortcutsModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Keyboard Shortcuts</h2>
+      <button class="icon-btn" id="closeShortcuts">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="shortcut-list">
+      <div class="shortcut-row"><kbd>Space</kbd><span>Start / Pause timer</span></div>
+      <div class="shortcut-row"><kbd>R</kbd><span>Reset timer</span></div>
+      <div class="shortcut-row"><kbd>N</kbd><span>Focus entry input</span></div>
+      <div class="shortcut-row"><kbd>1</kbd><span>Work mode</span></div>
+      <div class="shortcut-row"><kbd>2</kbd><span>Short break</span></div>
+      <div class="shortcut-row"><kbd>3</kbd><span>Long break</span></div>
+      <div class="shortcut-row"><kbd>Q</kbd><span>Open quick capture</span></div>
+      <div class="shortcut-row"><kbd>?</kbd><span>Toggle this panel</span></div>
+      <div class="shortcut-row"><kbd>Esc</kbd><span>Close modal</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="eodModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="eodTitle">Day Summary 🎉</h2>
+      <button class="icon-btn" id="closeEod">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div id="eodContent" class="eod-content"></div>
+    <button class="primary-btn" id="closeEodBtn" style="margin-top:16px">Close</button>
+  </div>
+</div>
+
+<!-- ── Auto-Rollover Morning Review Modal ──────── -->
+<div class="modal-overlay" id="autoRollModal">
+  <div class="modal ar-modal">
+    <div class="modal-header">
+      <div class="ar-modal-title-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18" style="color:#fbbf24;flex-shrink:0"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+        <h2>Tasks carried forward</h2>
+      </div>
+      <button class="icon-btn" id="closeAutoRoll" onclick="saveAutoRollModal()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <p class="ar-subtitle">These tasks were automatically rolled to today. Log time spent and add any notes before you start.</p>
+    <div id="autoRollList" class="ar-list"></div>
+    <div class="ar-actions">
+      <button class="primary-btn" onclick="saveAutoRollModal()">Done — start today</button>
+      <button class="outline-btn" onclick="saveAutoRollModal()">Skip</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"><span id="toastMsg"></span></div>
+
+<!-- Achievement unlocked toast -->
+<div class="achieve-toast" id="achieveToast">
+  <div class="ach-toast-icon" id="achToastIcon">🏆</div>
+  <div>
+    <div class="ach-toast-label">Achievement Unlocked!</div>
+    <div class="ach-toast-title" id="achToastTitle"></div>
+    <div class="ach-toast-desc"  id="achToastDesc"></div>
+  </div>
+</div>
+
+<!-- ── Quick Capture Popup ──────────────────────────── -->
+<div class="qc-popup" id="qcPopup" style="display:none">
+  <div class="qc-top">
+    <span class="qc-title">⚡ Quick Capture</span>
+    <button class="icon-btn qc-close" id="qcClose">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <textarea class="qc-textarea" id="qcTextarea"
+    placeholder="Capture your thought… (Ctrl+Enter to save, Esc to close)"></textarea>
+  <div class="qc-actions">
+    <button class="primary-btn" id="qcSaveNote">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+      Save Note
+    </button>
+    <button class="outline-btn" id="qcSaveTask">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+      Move to Task
+    </button>
+  </div>
+</div>
+
+<!-- ── FAB ─────────────────────────────────────────── -->
+<button class="fab" id="fabBtn" title="Quick note (Q)">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+</button>
+
+<!-- Warm light overlay — tints the whole screen amber for eye comfort -->
+<div id="warmOverlay" class="warm-overlay"></div>
+
+
+<script src="app.js"></script>
+</body>
+</html>
