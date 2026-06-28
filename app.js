@@ -409,6 +409,7 @@ function _initFirebaseAuth() {
           renderStats();
           renderCalendar();
           renderQuickNotes();
+          checkEod();
         }
       } else {
         // Restore login card heading on sign-out
