@@ -543,6 +543,8 @@ const state = {
     weekStartMonday:   true,
     timeFormat24:      false,
     defaultCat:        'work',
+    ghostDisplay:      'both',   // 'both' | 'banner' | 'drawer' | 'off'
+    ghostDismissed:    [],
   },
   ui: {
     view:          'log',
@@ -651,6 +653,185 @@ function parseTags(text) {
 
 function fmtContent(text) {
   return esc(text).replace(/#(\w+)/g, '<span class="entry-tag">#$1</span>');
+}
+
+/* ─────────────────────────────────────────────────────
+   GHOST TASKS — helpers
+   A "ghost" = entry where done=false AND rolledTo=null AND date < today.
+   Dismissed ghosts are stored in state.settings.ghostDismissed (array of entry IDs).
+───────────────────────────────────────────────────── */
+
+function getGhostTasks() {
+  const today    = todayStr();
+  const dismissed = new Set(state.settings.ghostDismissed || []);
+  const ghosts   = [];
+  Object.keys(state.notes.entries).sort().forEach(dateStr => {
+    if (dateStr >= today) return;
+    (state.notes.entries[dateStr] || []).forEach(e => {
+      if (!e.done && !e.rolledTo && !dismissed.has(e.id)) {
+        ghosts.push({ entry: e, date: dateStr });
+      }
+    });
+  });
+  return ghosts; // sorted oldest first
+}
+
+function dismissGhost(entryId) {
+  if (!state.settings.ghostDismissed) state.settings.ghostDismissed = [];
+  if (!state.settings.ghostDismissed.includes(entryId)) {
+    state.settings.ghostDismissed.push(entryId);
+  }
+  save();
+  renderGhostBanner();
+  renderGhostDrawer();
+  renderCalendar();
+  renderStats();
+}
+
+function rollGhostToday(entryId, sourceDate) {
+  const srcEntries = state.notes.entries[sourceDate] || [];
+  const entry = srcEntries.find(e => e.id === entryId);
+  if (!entry) return;
+  const today = todayStr();
+  const [sourceLbl] = fmtDate(sourceDate);
+  const systemCmt = {
+    id:     (Date.now() + 1).toString(),
+    text:   '\u21a9 Rolled from ' + sourceLbl + ' (via Ghost panel)',
+    time:   nowTime(),
+    ts:     Date.now() + 1,
+    system: true,
+  };
+  const newEntry = {
+    id:           Date.now().toString(),
+    content:      entry.content,
+    notes:        entry.notes || '',
+    cat:          entry.cat,
+    priority:     entry.priority,
+    tags:         [...(entry.tags || [])],
+    time:         nowTime(),
+    ts:           Date.now(),
+    done:         false,
+    pomodoros:    0,
+    subtasks:     (entry.subtasks || []).map(s => ({ ...s, done: false })),
+    rolledFrom:   sourceDate,
+    rolledTo:     null,
+    autoRollover: false,
+    comments:     [systemCmt, ...(entry.comments || [])],
+  };
+  if (!state.notes.entries[today]) state.notes.entries[today] = [];
+  state.notes.entries[today].unshift(newEntry);
+  entry.rolledTo = today;
+  save();
+  renderLog();
+  renderCalendar();
+  renderStats();
+  renderGhostBanner();
+  renderGhostDrawer();
+  showToast('\u2713 Ghost task rolled to Today');
+  checkAchievements();
+}
+
+function ghostDaysAgo(dateStr) {
+  const today = new Date(todayStr() + 'T00:00:00');
+  const then  = new Date(dateStr   + 'T00:00:00');
+  const diff  = Math.round((today - then) / 86400000);
+  return diff === 1 ? 'yesterday' : diff + 'd ago';
+}
+
+function renderGhostBanner() {
+  const el = document.getElementById('ghostBanner');
+  if (!el) return;
+  const mode = state.settings.ghostDisplay || 'both';
+  if (mode !== 'both' && mode !== 'banner') { el.style.display = 'none'; return; }
+  const ghosts = getGhostTasks();
+  if (!ghosts.length) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  const isOpen = el.classList.contains('ghost-expanded');
+  const countLabel = ghosts.length === 1 ? '1 abandoned task' : ghosts.length + ' abandoned tasks';
+
+  let tasksHtml = '';
+  if (isOpen) {
+    tasksHtml = ghosts.map(function(g) {
+      const cat     = getAllCats()[g.entry.cat] || CATS.other;
+      const ageText = ghostDaysAgo(g.date);
+      const textEsc = esc(g.entry.content);
+      const ageHtml = '<span class="ghost-age">' + ageText + '</span>';
+      const catHtml = '<span class="ghost-cat-pill">' + cat.emoji + ' ' + cat.label + '</span>';
+      return '<div class="ghost-task-row">'
+        + '<div class="ghost-task-info">'
+        + '<div class="ghost-task-text">' + textEsc + '</div>'
+        + '<div class="ghost-task-meta">' + ageHtml + catHtml + '</div>'
+        + '</div>'
+        + '<div class="ghost-task-actions">'
+        + '<button class="ghost-btn ghost-roll" onclick="rollGhostToday(\'' + g.entry.id + '\',\'' + g.date + '\')" title="Roll to today">Roll Today</button>'
+        + '<button class="ghost-btn ghost-dismiss" onclick="dismissGhost(\'' + g.entry.id + '\')" title="Dismiss">✕</button>'
+        + '</div>'
+        + '</div>';
+    }).join('');
+  }
+
+  const chevron   = isOpen ? '&#9650;' : '&#9660;';
+  const bodyStyle = isOpen ? '' : 'display:none';
+
+  el.innerHTML = '<div class="ghost-banner-header" onclick="toggleGhostBanner()">'
+    + '<span class="ghost-banner-icon">&#128123;</span>'
+    + '<div class="ghost-banner-title">'
+    + '<strong>' + countLabel + ' from past days</strong>'
+    + '<span>Never completed &amp; never rolled forward</span>'
+    + '</div>'
+    + '<span class="ghost-banner-chevron">' + chevron + '</span>'
+    + '</div>'
+    + '<div class="ghost-banner-body" style="' + bodyStyle + '">' + tasksHtml + '</div>';
+}
+
+function toggleGhostBanner() {
+  const el = document.getElementById('ghostBanner');
+  if (!el) return;
+  el.classList.toggle('ghost-expanded');
+  renderGhostBanner();
+}
+
+function renderGhostDrawer() {
+  const el   = document.getElementById('ghostDrawerBody');
+  const hdr  = document.getElementById('ghostDrawerCount');
+  if (!el) return;
+  const mode = state.settings.ghostDisplay || 'both';
+  const card = document.getElementById('ghostDrawerCard');
+  if (card) {
+    if (mode !== 'both' && mode !== 'drawer') { card.style.display = 'none'; return; }
+    card.style.display = '';
+  }
+  const ghosts = getGhostTasks();
+  if (hdr) hdr.textContent = ghosts.length;
+  if (!ghosts.length) {
+    el.innerHTML = '<div class="ghost-drawer-empty">All clear \u2728 No abandoned tasks.</div>';
+    return;
+  }
+  el.innerHTML = ghosts.map(function(g) {
+    const cat     = getAllCats()[g.entry.cat] || CATS.other;
+    const ageText = ghostDaysAgo(g.date);
+    const textEsc = esc(g.entry.content);
+    return '<div class="ghost-drawer-item">'
+      + '<span class="ghost-drawer-age">' + ageText + '</span>'
+      + '<div class="ghost-drawer-info">'
+      + '<div class="ghost-drawer-text">' + textEsc + '</div>'
+      + '<div class="ghost-drawer-cat">' + cat.emoji + ' ' + cat.label + '</div>'
+      + '</div>'
+      + '<div class="ghost-drawer-actions">'
+      + '<button class="ghost-btn ghost-roll" onclick="rollGhostToday(\'' + g.entry.id + '\',\'' + g.date + '\')" title="Roll to today">Roll</button>'
+      + '<button class="ghost-btn ghost-dismiss" onclick="dismissGhost(\'' + g.entry.id + '\')" title="Dismiss">&#10005;</button>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+function toggleGhostDrawer() {
+  const body    = document.getElementById('ghostDrawerBody');
+  const chevron = document.getElementById('ghostDrawerChevron');
+  if (!body) return;
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : '';
+  if (chevron) chevron.style.transform = isOpen ? '' : 'rotate(90deg)';
 }
 
 function getModeSecs(mode) {
@@ -1152,20 +1333,30 @@ function renderCalendar() {
     const cnt   = (state.notes.entries[ds] || []).length;
     const poms  = state.pomLog[ds] || 0;
     const isFut = ds > today;
+
+    // Ghost heat: any past day with undismissed pending-unrolled tasks
+    const dismissed = new Set(state.settings.ghostDismissed || []);
+    const hasGhost = !isFut && ds < today && (state.notes.entries[ds] || []).some(
+      e => !e.done && !e.rolledTo && !dismissed.has(e.id)
+    );
+
     const cls   = [
       'cal-cell',
       ds === today             ? 'cal-today'    : '',
       ds === state.notes.date  ? 'cal-selected' : '',
       isFut                    ? 'cal-future'   : '',
       cnt > 0 && !isFut        ? 'cal-active'   : '',
+      hasGhost                 ? 'cal-ghost'    : '',
     ].filter(Boolean).join(' ');
 
     const dot = cnt > 0 && !isFut
       ? `<span class="cal-dot" style="background:${poms > 0 ? 'var(--c-long)' : 'var(--primary)'}"></span>`
       : '';
 
-    const title = !isFut ? `${ds}: ${cnt} entr${cnt===1?'y':'ies'}${poms?' · 🍅'+poms:''}` : '';
-    html += `<span class="${cls}" ${!isFut ? `onclick="navigateToDate('${ds}')"` : ''} title="${title}">${d}${dot}</span>`;
+    const ghostIndicator = hasGhost ? '<span class="cal-ghost-dot"></span>' : '';
+    const title = !isFut ? `${ds}: ${cnt} entr${cnt===1?'y':'ies'}${poms?' · 🍅'+poms:''}${hasGhost?' · 👻 ghosts':''}` : '';
+    const click = !isFut ? `onclick="navigateToDate('${ds}')"` : '';
+    html += `<span class="${cls}" ${click} title="${title}">${d}${dot}${ghostIndicator}</span>`;
   }
 
   html += '</div>';
@@ -1651,6 +1842,8 @@ function renderStats() {
   }
   document.getElementById('sFocus').textContent = `${poms * state.settings.workDuration}m`;
   renderDots();
+  renderGhostBanner();
+  renderGhostDrawer();
 }
 
 /* ─────────────────────────────────────────────────────
@@ -2956,6 +3149,7 @@ function loadSettingsUI() {
   document.getElementById('s-notifs').checked    = s.desktopNotifs;
   document.getElementById('s-eod').checked       = s.endOfDaySummary;
   if (document.getElementById('s-autoRollover')) document.getElementById('s-autoRollover').checked = !!s.autoRollover;
+  if (document.getElementById('s-ghostDisplay')) document.getElementById('s-ghostDisplay').value = s.ghostDisplay || 'both';
   // new
   const accent = s.accentColor || '#7C3AED';
   const fsEl   = document.getElementById('s-fontsize');
@@ -3001,6 +3195,7 @@ function applySettings() {
   s.desktopNotifs       = document.getElementById('s-notifs').checked;
   s.endOfDaySummary     = document.getElementById('s-eod').checked;
   s.autoRollover        = document.getElementById('s-autoRollover')?.checked || false;
+  s.ghostDisplay        = document.getElementById('s-ghostDisplay')?.value   || 'both';
   // new
   s.accentColor      = document.getElementById('s-accent')?.value    || '#7C3AED';
   s.fontSize         = clamp(document.getElementById('s-fontsize')?.value || 16, 13, 20);
@@ -3017,6 +3212,8 @@ function applySettings() {
   applyRingStyle(s.ringStyle);
   updateClocks();
   renderCalendar();
+  renderGhostBanner();
+  renderGhostDrawer();
 
   if (s.desktopNotifs && 'Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission();
@@ -3969,7 +4166,7 @@ function initKeyboard() {
    Uses HTML5 drag-and-drop on the .drag-grip handle.
    Persisted to localStorage as df2_sidebarOrder.
 ───────────────────────────────────────────────────── */
-const SIDEBAR_DEFAULT_ORDER = ['timer','stats','ambient','qnotes','calendar'];
+const SIDEBAR_DEFAULT_ORDER = ['timer','stats','ghosts','ambient','qnotes','calendar'];
 const SIDEBAR_ORDER_KEY = 'df2_sidebarOrder';
 
 function loadSidebarOrder() {

@@ -2137,3 +2137,124 @@ kbd {
 .ar-actions {
   display: flex; gap: 8px; margin-top: 18px; justify-content: flex-end;
 }
+
+/* ── Calendar ghost indicators ────────────────────── */
+.cal-cell.cal-ghost { color: var(--text); }
+.cal-ghost-dot {
+  position: absolute; bottom: 2px; right: 3px;
+  width: 4px; height: 4px; border-radius: 50%;
+  background: #fbbf24;
+  box-shadow: 0 0 4px #fbbf24;
+}
+.cal-cell.cal-ghost:not(.cal-selected) {
+  border: 1px solid rgba(251,191,36,.35);
+  border-radius: 6px;
+}
+[data-theme="dark"] .cal-cell.cal-ghost:not(.cal-selected) {
+  border-color: rgba(251,191,36,.4);
+  background: rgba(251,191,36,.06);
+}
+
+/* ── Ghost Tasks — Banner ──────────────────────────── */
+.ghost-banner {
+  margin-bottom: 10px;
+  border-radius: var(--r);
+  border: 1px solid rgba(251,191,36,.28);
+  background: linear-gradient(90deg, rgba(251,191,36,.07) 0%, rgba(251,191,36,.03) 100%);
+  overflow: hidden;
+}
+.ghost-banner-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; cursor: pointer; user-select: none;
+  transition: background .15s;
+}
+.ghost-banner-header:hover { background: rgba(251,191,36,.09); }
+.ghost-banner-icon { font-size: 1.05rem; flex-shrink: 0; }
+.ghost-banner-title { flex: 1; }
+.ghost-banner-title strong {
+  display: block; font-size: .85rem; font-weight: 700;
+  color: #fbbf24; margin-bottom: 1px;
+}
+.ghost-banner-title span { font-size: .74rem; color: var(--text2); }
+.ghost-banner-chevron { font-size: .72rem; color: rgba(251,191,36,.6); transition: transform .2s; }
+.ghost-banner.ghost-expanded .ghost-banner-chevron { transform: rotate(180deg); }
+.ghost-banner-body {
+  padding: 0 12px 10px;
+  display: flex; flex-direction: column; gap: 6px;
+  max-height: 280px; overflow-y: auto;
+}
+.ghost-task-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px;
+  background: var(--surf2);
+  border: 1px solid rgba(251,191,36,.18);
+  border-radius: var(--rs);
+}
+.ghost-task-info { flex: 1; min-width: 0; }
+.ghost-task-text {
+  font-size: .85rem; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ghost-task-meta { display: flex; gap: 5px; margin-top: 3px; }
+.ghost-age {
+  font-size: .66rem; font-weight: 700; color: #fbbf24;
+  background: rgba(251,191,36,.12); padding: 1px 6px; border-radius: 3px;
+}
+.ghost-cat-pill {
+  font-size: .66rem; color: var(--text3);
+  background: var(--border); padding: 1px 6px; border-radius: 3px;
+}
+.ghost-task-actions { display: flex; gap: 4px; flex-shrink: 0; }
+
+/* ── Ghost Tasks — Sidebar Drawer ─────────────────── */
+.ghost-drawer-card { padding-bottom: 4px; }
+.ghost-drawer-hdr {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 0 8px; cursor: pointer; user-select: none;
+  border-bottom: 1px solid var(--border); margin-bottom: 0;
+}
+.ghost-drawer-hdr-icon { font-size: .95rem; }
+.ghost-drawer-hdr-label { font-size: .78rem; font-weight: 700; color: var(--text2); flex: 1; }
+.ghost-drawer-count-badge {
+  font-size: .68rem; font-weight: 800;
+  background: rgba(251,191,36,.16); color: #fbbf24;
+  border: 1px solid rgba(251,191,36,.3);
+  padding: 1px 7px; border-radius: 10px;
+  min-width: 18px; text-align: center;
+}
+.ghost-drawer-chevron { font-size: .72rem; color: var(--text3); transition: transform .2s; }
+#ghostDrawerBody {
+  padding-top: 8px; max-height: 240px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.ghost-drawer-item {
+  display: flex; align-items: flex-start; gap: 7px;
+  padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,.04);
+}
+.ghost-drawer-item:last-child { border-bottom: none; }
+.ghost-drawer-age {
+  font-size: .63rem; font-weight: 700; color: #fbbf24;
+  background: rgba(251,191,36,.12); border-radius: 3px;
+  padding: 2px 5px; flex-shrink: 0; margin-top: 1px; white-space: nowrap;
+}
+.ghost-drawer-info { flex: 1; min-width: 0; }
+.ghost-drawer-text {
+  font-size: .8rem; color: var(--text2); line-height: 1.35;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ghost-drawer-cat { font-size: .63rem; color: var(--text3); margin-top: 2px; }
+.ghost-drawer-actions { display: flex; gap: 3px; flex-shrink: 0; }
+.ghost-drawer-empty {
+  font-size: .8rem; color: var(--text3); padding: 8px 0 4px; text-align: center;
+}
+
+/* ── Shared ghost action buttons ─────────────────── */
+.ghost-btn {
+  font-size: .68rem; font-weight: 600; padding: 3px 8px;
+  border-radius: 4px; border: 1px solid transparent;
+  cursor: pointer; transition: opacity .15s, transform .1s;
+  -webkit-appearance: none; white-space: nowrap;
+}
+.ghost-btn:hover { opacity: .75; transform: scale(.97); }
+.ghost-roll    { background: rgba(var(--pr),var(--pg),var(--pb),.18); color: var(--primary); border-color: rgba(var(--pr),var(--pg),var(--pb),.3); }
+.ghost-dismiss { background: rgba(255,255,255,.05); color: var(--text3); border-color: var(--border); }
