@@ -409,8 +409,6 @@ function _initFirebaseAuth() {
           renderStats();
           renderCalendar();
           renderQuickNotes();
-          populateCatSelects();
-          checkEod(); // run auto-rollover + EOD after cloud data is loaded
         }
       } else {
         // Restore login card heading on sign-out
@@ -451,9 +449,7 @@ const CATS = {
 };
 
 function getAllCats() {
-  const deleted = new Set(state.deletedBuiltinCats || []);
-  const all = {};
-  Object.entries(CATS).forEach(([k, v]) => { if (!deleted.has(k)) all[k] = v; });
+  const all = { ...CATS };
   (state.customCats || []).forEach(c => {
     all[c.id] = { emoji: c.emoji, label: c.label, pill: '', color: c.color, custom: true };
   });
@@ -533,7 +529,6 @@ const state = {
     autoStartWork:     false,
     desktopNotifs:     false,
     endOfDaySummary:   true,
-    rollHistoryCollapsed: true,  // hide roll-history comments by default
     dark:              false,
     warmLight:         0,
     timezone:          'local',
@@ -547,8 +542,6 @@ const state = {
     weekStartMonday:   true,
     timeFormat24:      false,
     defaultCat:        'work',
-    ghostDisplay:      'both',   // 'both' | 'banner' | 'drawer' | 'off'
-    autoRollover:      false,    // global: auto-carry incomplete tasks to next day
   },
   ui: {
     view:          'log',
@@ -560,8 +553,6 @@ const state = {
     rollFormId:     null,  // entry id showing roll-to-next-day form
     subtaskFormId:  null,  // entry id showing add-subtask input
     timeSpentId:    null,  // entry id showing time-spent prompt
-    reminderFormId: null,  // entry/subtask id showing reminder form (format: "entryId" or "entryId:stId")
-    rollHistoryOpen: {},   // { [entryId]: true } — entries where roll history is expanded
   },
   ambient: {
     type:   'none',
@@ -582,7 +573,6 @@ const state = {
   },
   quickNotes:   [],
   customCats:   [],
-  deletedBuiltinCats: [], // built-in cat keys the user has removed
   // ── Profiles (global, not per-profile) ───────────
   profiles:         [],   // [{ id, name, emoji, color, createdAt }]
   activeProfileId:  null,
@@ -591,8 +581,8 @@ const state = {
 const DEFAULT_SETTINGS = {
   workDuration: 25, shortBreakDuration: 5, longBreakDuration: 15,
   longBreakInterval: 4, autoStartBreaks: false, autoStartWork: false,
-  desktopNotifs: false, endOfDaySummary: true, dark: false,
-  warmLight: 0, timezone: 'local', rollHistoryCollapsed: true,
+  desktopNotifs: false, endOfDaySummary: true, autoRollover: false, dark: false,
+  warmLight: 0, timezone: 'local',
 };
 
 const PROFILE_EMOJIS = [
@@ -660,189 +650,6 @@ function parseTags(text) {
 
 function fmtContent(text) {
   return esc(text).replace(/#(\w+)/g, '<span class="entry-tag">#$1</span>');
-}
-
-/* ─────────────────────────────────────────────────────
-   GHOST TASKS — helpers
-   A "ghost" = entry where done=false AND rolledTo=null AND date < today.
-   Dismissed ghosts are stored in state.settings.ghostDismissed (Set of entry IDs).
-───────────────────────────────────────────────────── */
-
-function getGhostTasks() {
-  const today   = todayStr();
-  const dismissed = new Set(state.settings.ghostDismissed || []);
-  const ghosts  = [];
-  Object.keys(state.notes.entries).sort().forEach(dateStr => {
-    if (dateStr >= today) return;
-    (state.notes.entries[dateStr] || []).forEach(e => {
-      if (!e.done && !e.rolledTo && !dismissed.has(e.id)) {
-        ghosts.push({ entry: e, date: dateStr });
-      }
-    });
-  });
-  return ghosts; // sorted oldest first
-}
-
-function dismissGhost(entryId) {
-  if (!state.settings.ghostDismissed) state.settings.ghostDismissed = [];
-  if (!state.settings.ghostDismissed.includes(entryId)) {
-    state.settings.ghostDismissed.push(entryId);
-  }
-  save();
-  renderGhostBanner();
-  renderGhostDrawer();
-  renderCalendar();
-  renderStats();
-}
-
-function rollGhostToday(entryId, sourceDate) {
-  // Find the entry in its original date bucket
-  const srcEntries = state.notes.entries[sourceDate] || [];
-  const entry = srcEntries.find(e => e.id === entryId);
-  if (!entry) return;
-  const today = todayStr();
-  const [targetLbl] = fmtDate(today);
-  const [sourceLbl] = fmtDate(sourceDate);
-  const systemCmt = {
-    id:     (Date.now() + 1).toString(),
-    text:   '\u21a9 Rolled from ' + sourceLbl + ' (via Ghost panel)',
-    time:   nowTime(),
-    ts:     Date.now() + 1,
-    system: true,
-  };
-  const newEntry = {
-    id:         Date.now().toString(),
-    content:    entry.content,
-    notes:      entry.notes || '',
-    cat:        entry.cat,
-    priority:   entry.priority,
-    tags:       [...(entry.tags || [])],
-    time:       nowTime(),
-    ts:         Date.now(),
-    done:       false,
-    pomodoros:  0,
-    subtasks:   (entry.subtasks || []).map(s => ({ ...s, done: false })),
-    rolledFrom: sourceDate,
-    rolledTo:   null,
-    comments:   [systemCmt, ...(entry.comments || [])],
-  };
-  if (!state.notes.entries[today]) state.notes.entries[today] = [];
-  state.notes.entries[today].unshift(newEntry);
-  entry.rolledTo = today;
-  save();
-  renderLog();
-  renderCalendar();
-  renderStats();
-  renderGhostBanner();
-  renderGhostDrawer();
-  showToast('\u2713 Ghost task rolled to Today');
-  checkAchievements();
-}
-
-function ghostDaysAgo(dateStr) {
-  const today = new Date(todayStr() + 'T00:00:00');
-  const then  = new Date(dateStr  + 'T00:00:00');
-  const diff  = Math.round((today - then) / 86400000);
-  return diff === 1 ? 'yesterday' : diff + 'd ago';
-}
-
-function renderGhostBanner() {
-  const el = document.getElementById('ghostBanner');
-  if (!el) return;
-  const mode = state.settings.ghostDisplay || 'both';
-  if (mode !== 'both' && mode !== 'banner') { el.style.display = 'none'; return; }
-  const ghosts = getGhostTasks();
-  if (!ghosts.length) { el.style.display = 'none'; return; }
-  el.style.display = '';
-  const isOpen = el.classList.contains('ghost-expanded');
-  const countLabel = ghosts.length === 1 ? '1 abandoned task' : ghosts.length + ' abandoned tasks';
-
-  // Build task rows only when open — pre-compute conditionals to avoid nested backticks
-  let tasksHtml = '';
-  if (isOpen) {
-    tasksHtml = ghosts.map(function(g) {
-      const cat     = getAllCats()[g.entry.cat] || CATS.other;
-      const ageText = ghostDaysAgo(g.date);
-      const textEsc = esc(g.entry.content);
-      const ageHtml = '<span class="ghost-age">' + ageText + '</span>';
-      const catHtml = '<span class="ghost-cat-pill">' + cat.emoji + ' ' + cat.label + '</span>';
-      return '<div class="ghost-task-row">'
-        + '<div class="ghost-task-info">'
-        + '<div class="ghost-task-text">' + textEsc + '</div>'
-        + '<div class="ghost-task-meta">' + ageHtml + catHtml + '</div>'
-        + '</div>'
-        + '<div class="ghost-task-actions">'
-        + '<button class="ghost-btn ghost-roll" onclick="rollGhostToday(\'' + g.entry.id + '\',\'' + g.date + '\')" title="Roll to today">Roll Today</button>'
-        + '<button class="ghost-btn ghost-dismiss" onclick="dismissGhost(\'' + g.entry.id + '\')" title="Dismiss">✕</button>'
-        + '</div>'
-        + '</div>';
-    }).join('');
-  }
-
-  const chevron   = isOpen ? '&#9650;' : '&#9660;';
-  const bodyStyle = isOpen ? '' : 'display:none';
-
-  el.innerHTML = '<div class="ghost-banner-header" onclick="toggleGhostBanner()">'
-    + '<span class="ghost-banner-icon">&#128123;</span>'
-    + '<div class="ghost-banner-title">'
-    + '<strong>' + countLabel + ' from past days</strong>'
-    + '<span>Never completed &amp; never rolled forward</span>'
-    + '</div>'
-    + '<span class="ghost-banner-chevron">' + chevron + '</span>'
-    + '</div>'
-    + '<div class="ghost-banner-body" style="' + bodyStyle + '">' + tasksHtml + '</div>';
-}
-
-function toggleGhostBanner() {
-  const el = document.getElementById('ghostBanner');
-  if (!el) return;
-  el.classList.toggle('ghost-expanded');
-  renderGhostBanner();
-}
-
-function renderGhostDrawer() {
-  const el = document.getElementById('ghostDrawerBody');
-  const hdr = document.getElementById('ghostDrawerCount');
-  if (!el) return;
-  const mode = state.settings.ghostDisplay || 'both';
-  const card = document.getElementById('ghostDrawerCard');
-  if (card) {
-    if (mode !== 'both' && mode !== 'drawer') {
-      card.style.display = 'none'; return;
-    }
-    card.style.display = '';
-  }
-  const ghosts = getGhostTasks();
-  if (hdr) hdr.textContent = ghosts.length;
-  if (!ghosts.length) {
-    el.innerHTML = '<div class="ghost-drawer-empty">All clear \u2728 No abandoned tasks.</div>';
-    return;
-  }
-  el.innerHTML = ghosts.map(function(g) {
-    const cat     = getAllCats()[g.entry.cat] || CATS.other;
-    const ageText = ghostDaysAgo(g.date);
-    const textEsc = esc(g.entry.content);
-    return '<div class="ghost-drawer-item">'
-      + '<span class="ghost-drawer-age">' + ageText + '</span>'
-      + '<div class="ghost-drawer-info">'
-      + '<div class="ghost-drawer-text">' + textEsc + '</div>'
-      + '<div class="ghost-drawer-cat">' + cat.emoji + ' ' + cat.label + '</div>'
-      + '</div>'
-      + '<div class="ghost-drawer-actions">'
-      + '<button class="ghost-btn ghost-roll" onclick="rollGhostToday(\'' + g.entry.id + '\',\'' + g.date + '\')" title="Roll to today">Roll</button>'
-      + '<button class="ghost-btn ghost-dismiss" onclick="dismissGhost(\'' + g.entry.id + '\')" title="Dismiss">&#10005;</button>'
-      + '</div>'
-      + '</div>';
-  }).join('');
-}
-
-function toggleGhostDrawer() {
-  const body = document.getElementById('ghostDrawerBody');
-  const chevron = document.getElementById('ghostDrawerChevron');
-  if (!body) return;
-  const isOpen = body.style.display !== 'none';
-  body.style.display = isOpen ? 'none' : '';
-  if (chevron) chevron.style.transform = isOpen ? '' : 'rotate(90deg)';
 }
 
 function getModeSecs(mode) {
@@ -1344,32 +1151,20 @@ function renderCalendar() {
     const cnt   = (state.notes.entries[ds] || []).length;
     const poms  = state.pomLog[ds] || 0;
     const isFut = ds > today;
-    // Future cells are clickable only if they have entries
-    const isFutEmpty = isFut && cnt === 0;
-
-    // Ghost heat: any past day with undismissed pending-unrolled tasks
-    const dismissed = new Set(state.settings.ghostDismissed || []);
-    const hasGhost = !isFut && ds < today && (state.notes.entries[ds] || []).some(
-      e => !e.done && !e.rolledTo && !dismissed.has(e.id)
-    );
-
     const cls   = [
       'cal-cell',
       ds === today             ? 'cal-today'    : '',
       ds === state.notes.date  ? 'cal-selected' : '',
-      isFutEmpty               ? 'cal-future'   : '',
-      cnt > 0                  ? 'cal-active'   : '',
-      hasGhost                 ? 'cal-ghost'    : '',
+      isFut                    ? 'cal-future'   : '',
+      cnt > 0 && !isFut        ? 'cal-active'   : '',
     ].filter(Boolean).join(' ');
 
-    const dot = cnt > 0
+    const dot = cnt > 0 && !isFut
       ? `<span class="cal-dot" style="background:${poms > 0 ? 'var(--c-long)' : 'var(--primary)'}"></span>`
       : '';
 
-    const ghostIndicator = hasGhost ? '<span class="cal-ghost-dot"></span>' : '';
-    const title = `${ds}: ${cnt} entr${cnt===1?'y':'ies'}${poms?' · 🍅'+poms:''}${hasGhost?' · 👻 ghosts':''}`;
-    const click = !isFutEmpty ? `onclick="navigateToDate('${ds}')"` : '';
-    html += `<span class="${cls}" ${click} title="${title}">${d}${dot}${ghostIndicator}</span>`;
+    const title = !isFut ? `${ds}: ${cnt} entr${cnt===1?'y':'ies'}${poms?' · 🍅'+poms:''}` : '';
+    html += `<span class="${cls}" ${!isFut ? `onclick="navigateToDate('${ds}')"` : ''} title="${title}">${d}${dot}</span>`;
   }
 
   html += '</div>';
@@ -1488,7 +1283,6 @@ function save() {
   localStorage.setItem(pk('achievements'),  JSON.stringify(state.achievements));
   localStorage.setItem(pk('quicknotes'),    JSON.stringify(state.quickNotes));
   localStorage.setItem(pk('customcats'),    JSON.stringify(state.customCats));
-  localStorage.setItem(pk('deletedbuiltins'), JSON.stringify(state.deletedBuiltinCats || []));
   localStorage.setItem(pk('lastDate'),      todayStr());
   localStorage.setItem('df2_profiles',      JSON.stringify(state.profiles));
   localStorage.setItem('df2_activeProfile', state.activeProfileId);
@@ -1502,7 +1296,6 @@ function loadProfileData(pid) {
   state.pomLog         = {};
   state.quickNotes     = [];
   state.customCats     = [];
-  state.deletedBuiltinCats = [];
   state.achievements   = { unlocked: [] };
   state.settings       = { ...DEFAULT_SETTINGS };
   state.timer.mode     = 'work';
@@ -1529,9 +1322,6 @@ function loadProfileData(pid) {
 
     const cc = localStorage.getItem(`df2_p${pid}_customcats`);
     if (cc) state.customCats = JSON.parse(cc);
-
-    const db = localStorage.getItem(`df2_p${pid}_deletedbuiltins`);
-    if (db) state.deletedBuiltinCats = JSON.parse(db); else state.deletedBuiltinCats = [];
 
     // Restore timer
     const t = localStorage.getItem(`df2_p${pid}_timer`);
@@ -1799,10 +1589,7 @@ function renderTimerModeUI() {
   document.getElementById('timerLabel').textContent = MODE_LABELS[state.timer.mode];
 
   const ring = document.getElementById('timerRing');
-  // work mode uses the user's accent colour; breaks use their fixed colours
-  ring.style.stroke = state.timer.mode === 'work'
-    ? getComputedStyle(document.documentElement).getPropertyValue('--primary').trim()
-    : MODE_COLORS[state.timer.mode].stroke;
+  ring.style.stroke = MODE_COLORS[state.timer.mode].stroke;
   ring.style.strokeDasharray = CIRCUMFERENCE;
 }
 
@@ -1863,8 +1650,6 @@ function renderStats() {
   }
   document.getElementById('sFocus').textContent = `${poms * state.settings.workDuration}m`;
   renderDots();
-  renderGhostBanner();
-  renderGhostDrawer();
 }
 
 /* ─────────────────────────────────────────────────────
@@ -1876,32 +1661,15 @@ function renderDateHeader() {
   document.getElementById('dateMain').textContent = main;
   document.getElementById('dateSub').textContent  = sub || '';
   const next = document.getElementById('nextDay');
-  // Can go forward if we're not on today, OR if there's a future entry to jump to
-  const nextStr = offsetDate(state.notes.date, 1);
-  const canGoNext = state.notes.date < todayStr() ||
-    Object.keys(state.notes.entries).some(d => d > state.notes.date && (state.notes.entries[d] || []).length > 0);
-  next.disabled = !canGoNext;
+  next.disabled = state.notes.date >= todayStr();
   next.style.opacity = next.disabled ? '.3' : '1';
   syncEntryDatePicker();
 }
 
 function changeDate(delta) {
-  if (delta < 0) {
-    // Going backwards — always allowed
-    state.notes.date = offsetDate(state.notes.date, delta);
-  } else {
-    // Going forwards — if next date is past today, skip to nearest future date with entries
-    const next = offsetDate(state.notes.date, 1);
-    if (next > todayStr()) {
-      const futureDates = Object.keys(state.notes.entries)
-        .filter(d => d > state.notes.date && (state.notes.entries[d] || []).length > 0)
-        .sort();
-      if (!futureDates.length) return; // nothing to jump to
-      state.notes.date = futureDates[0];
-    } else {
-      state.notes.date = next;
-    }
-  }
+  const str = offsetDate(state.notes.date, delta);
+  if (str > todayStr()) return;
+  state.notes.date = str;
   renderDateHeader();
   renderLog();
   renderStats();
@@ -1956,23 +1724,12 @@ function _renderNewStList() {
   if (inputs.length) inputs[inputs.length-1].focus();
 }
 
-function _syncNewStInputs() {
-  // Flush whatever is currently typed into the inputs before re-rendering
-  const list = document.getElementById('newStList');
-  if (!list) return;
-  list.querySelectorAll('.new-st-input').forEach((inp, i) => {
-    _newSubtasks[i] = inp.value;
-  });
-}
-
 function _addNewSubtask() {
-  _syncNewStInputs();
   _newSubtasks.push('');
   _renderNewStList();
 }
 
 function _removeNewSt(i) {
-  _syncNewStInputs();
   _newSubtasks.splice(i, 1);
   _renderNewStList();
 }
@@ -1990,8 +1747,6 @@ function addEntry() {
     return;
   }
 
-  _syncNewStInputs(); // capture any in-flight typed values
-
   // Use the date picker value if set, otherwise fall back to current view date
   const targetDate = (datePick?.value) || state.notes.date;
 
@@ -2008,8 +1763,8 @@ function addEntry() {
     pomodoros:  0,
     subtasks:   _newSubtasks.map(t => ({ id: Date.now().toString() + Math.random(), text: t, done: false })),
     comments:   [],
-    rolledFrom: null,
-    rolledTo:   null,
+    rolledFrom:   null,
+    rolledTo:     null,
     autoRollover: false,
   };
 
@@ -2076,7 +1831,7 @@ function toggleDone(id) {
   }
 }
 
-function startEdit(id, fromDblclick) {
+function startEdit(id) {
   if (_editId && _editId !== id) cancelEdit(_editId);
   const entry    = findEntry(id);
   if (!entry) return;
@@ -2102,15 +1857,8 @@ function startEdit(id, fromDblclick) {
     textEl.classList.add('hide');
     inpEl.classList.add('show');
     if (ctrlsEl) ctrlsEl.classList.add('show');
-    const card = document.querySelector(`.log-entry[data-id="${id}"]`);
-    if (card) card.classList.add('editing-entry');
     inpEl.focus(); inpEl.select();
     _editId = id;
-    // Flash animation on the text element position so user sees where edit came from
-    if (fromDblclick) {
-      textEl.classList.add('edit-flash');
-      setTimeout(() => textEl.classList.remove('edit-flash'), 260);
-    }
     inpEl.onkeydown = e => {
       if (e.key === 'Enter')  startEdit(id);
       if (e.key === 'Escape') cancelEdit(id);
@@ -2125,8 +1873,6 @@ function cancelEdit(id) {
   if (textEl)  textEl.classList.remove('hide');
   if (inpEl)   inpEl.classList.remove('show');
   if (ctrlsEl) ctrlsEl.classList.remove('show');
-  const card = document.querySelector(`.log-entry[data-id="${id}"]`);
-  if (card) card.classList.remove('editing-entry');
   if (_editId === id) _editId = null;
 }
 
@@ -2221,12 +1967,6 @@ function deleteComment(entryId, commentId) {
 function toggleCommentSection(id) {
   const el = document.getElementById(`cmts-${id}`);
   if (el) el.classList.toggle('hidden');
-}
-
-function toggleRollHistory(entryId) {
-  if (!state.ui.rollHistoryOpen) state.ui.rollHistoryOpen = {};
-  state.ui.rollHistoryOpen[entryId] = !state.ui.rollHistoryOpen[entryId];
-  renderLog();
 }
 
 /* ─────────────────────────────────────────────────────
@@ -2383,197 +2123,6 @@ function showRollForm(id) {
   renderLog();
 }
 
-/* ─────────────────────────────────────────────────────
-   REMINDER
-───────────────────────────────────────────────────── */
-function toggleReminderForm(entryId, stId) {
-  const key = stId ? entryId + ':' + stId : entryId;
-  state.ui.reminderFormId = state.ui.reminderFormId === key ? null : key;
-  renderLog();
-}
-
-function cancelReminderForm() {
-  state.ui.reminderFormId = null;
-  renderLog();
-}
-
-function reminderPanelHtml(key, existing) {
-  const val = existing || {};
-  const timeVal = val.time || '';
-  const dateVal = val.date || '';
-
-  // Parse existing values for steppers
-  let hour = 9, min = 0;
-  if (timeVal) { const p = timeVal.split(':'); hour = +p[0]||0; min = +p[1]||0; }
-  let mon = new Date().getMonth() + 1, day = new Date().getDate();
-  if (dateVal) { const p = dateVal.split('-'); mon = +p[1]||mon; day = +p[2]||day; }
-
-  const hhStr = String(hour).padStart(2,'0');
-  const mmStr = String(min).padStart(2,'0');
-  const monStr = String(mon).padStart(2,'0');
-  const dayStr = String(day).padStart(2,'0');
-  const setBadge = (timeVal || dateVal) ? '<span class="reminder-set-badge">● SET</span>' : '';
-  const clearBtn = (timeVal || dateVal) ? '<button class="outline-btn sm-btn" onclick="clearReminder(\'' + key + '\')">Clear</button>' : '';
-
-  return `
-    <div class="reminder-panel" id="reminder-panel-${key}">
-      <div class="reminder-panel-header">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-        <span>// REMINDER</span>
-        ${setBadge}
-        <button class="reminder-close-btn" onclick="cancelReminderForm()">✕</button>
-      </div>
-      <div class="reminder-dials-row">
-
-        <!-- TIME — round container -->
-        <div class="reminder-dial-wrap">
-          <div class="dial-label-row">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            TIME
-          </div>
-          <div class="reminder-dial round-dial" id="rdial-time-${key}">
-            <div class="stepper-pair">
-              <div class="stepper-unit">
-                <button class="stepper-btn" onclick="stepDial('${key}','hour',1)">▲</button>
-                <div class="stepper-val" id="rdial-h-${key}">${hhStr}</div>
-                <button class="stepper-btn" onclick="stepDial('${key}','hour',-1)">▼</button>
-              </div>
-              <div class="stepper-colon">:</div>
-              <div class="stepper-unit">
-                <button class="stepper-btn" onclick="stepDial('${key}','min',5)">▲</button>
-                <div class="stepper-val" id="rdial-m-${key}">${mmStr}</div>
-                <button class="stepper-btn" onclick="stepDial('${key}','min',-5)">▼</button>
-              </div>
-            </div>
-          </div>
-          <input type="hidden" id="rhid-time-${key}" value="${timeVal}">
-        </div>
-
-        <!-- DATE — square container -->
-        <div class="reminder-dial-wrap">
-          <div class="dial-label-row">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-            DATE
-          </div>
-          <div class="reminder-dial square-dial" id="rdial-date-${key}">
-            <div class="stepper-pair">
-              <div class="stepper-unit">
-                <button class="stepper-btn" onclick="stepDial('${key}','mon',1)">▲</button>
-                <div class="stepper-val" id="rdial-mon-${key}">${monStr}</div>
-                <button class="stepper-btn" onclick="stepDial('${key}','mon',-1)">▼</button>
-              </div>
-              <div class="stepper-colon">/</div>
-              <div class="stepper-unit">
-                <button class="stepper-btn" onclick="stepDial('${key}','day',1)">▲</button>
-                <div class="stepper-val" id="rdial-day-${key}">${dayStr}</div>
-                <button class="stepper-btn" onclick="stepDial('${key}','day',-1)">▼</button>
-              </div>
-            </div>
-          </div>
-          <input type="hidden" id="rhid-date-${key}" value="${dateVal}">
-        </div>
-
-      </div>
-      <div class="reminder-actions">
-        <button class="primary-btn sm-btn" onclick="saveReminder('${key}')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><polyline points="20 6 9 17 4 12"/></svg>
-          Set Reminder
-        </button>
-        ${clearBtn}
-      </div>
-    </div>`;
-}
-
-/* stepper state lives in the hidden inputs — read back when saving */
-function stepDial(key, field, delta) {
-  // Read current values from DOM
-  const hEl   = document.getElementById('rdial-h-' + key);
-  const mEl   = document.getElementById('rdial-m-' + key);
-  const monEl = document.getElementById('rdial-mon-' + key);
-  const dayEl = document.getElementById('rdial-day-' + key);
-  if (!hEl) return;
-
-  let h = parseInt(hEl.textContent) || 0;
-  let m = parseInt(mEl.textContent) || 0;
-  let mo = parseInt(monEl.textContent) || 1;
-  let d  = parseInt(dayEl.textContent) || 1;
-
-  if (field === 'hour') { h = (h + delta + 24) % 24; }
-  if (field === 'min')  { m = (m + delta + 60) % 60; }
-  if (field === 'mon')  { mo = (mo - 1 + delta + 12) % 12 + 1; }
-  if (field === 'day')  {
-    const maxDay = new Date(new Date().getFullYear(), mo, 0).getDate();
-    d = (d - 1 + delta + maxDay) % maxDay + 1;
-  }
-
-  const hhStr  = String(h).padStart(2,'0');
-  const mmStr  = String(m).padStart(2,'0');
-  const monStr = String(mo).padStart(2,'0');
-  const dayStr = String(d).padStart(2,'0');
-
-  if (hEl)   hEl.textContent   = hhStr;
-  if (mEl)   mEl.textContent   = mmStr;
-  if (monEl) monEl.textContent = monStr;
-  if (dayEl) dayEl.textContent = dayStr;
-
-  // Sync hidden inputs
-  const timeHid = document.getElementById('rhid-time-' + key);
-  const dateHid = document.getElementById('rhid-date-' + key);
-  if (timeHid) timeHid.value = hhStr + ':' + mmStr;
-  if (dateHid) dateHid.value = new Date().getFullYear() + '-' + monStr + '-' + dayStr;
-
-  // Animate the stepped value
-  const changed = field === 'hour' ? hEl : field === 'min' ? mEl : field === 'mon' ? monEl : dayEl;
-  changed.classList.remove('stepper-bounce');
-  void changed.offsetWidth; // reflow
-  changed.classList.add('stepper-bounce');
-}
-
-function saveReminder(key) {
-  const timeVal = document.getElementById('rhid-time-' + key)?.value || '';
-  const dateVal = document.getElementById('rhid-date-' + key)?.value || '';
-  if (!timeVal && !dateVal) {
-    showToast('⚠️ Pick a time or date for the reminder');
-    return;
-  }
-  const parts = key.split(':');
-  const entryId = parts[0];
-  const stId = parts[1];
-  const entry = findEntry(entryId);
-  if (!entry) return;
-  if (stId) {
-    const st = (entry.subtasks || []).find(s => s.id === stId);
-    if (st) st.reminder = { time: timeVal, date: dateVal };
-  } else {
-    entry.reminder = { time: timeVal, date: dateVal };
-  }
-  save();
-  state.ui.reminderFormId = null;
-  renderLog();
-  showToast('🔔 Reminder set' + (timeVal ? ' for ' + timeVal : '') + (dateVal ? ' on ' + dateVal : ''));
-}
-
-function clearReminder(key) {
-  const parts = key.split(':');
-  const entryId = parts[0];
-  const stId = parts[1];
-  const entry = findEntry(entryId);
-  if (!entry) return;
-  if (stId) {
-    const st = (entry.subtasks || []).find(s => s.id === stId);
-    if (st) delete st.reminder;
-  } else {
-    delete entry.reminder;
-  }
-  save();
-  state.ui.reminderFormId = null;
-  renderLog();
-  showToast('🔕 Reminder cleared');
-}
-
-/* ─────────────────────────────────────────────────────
-   ROLL
-───────────────────────────────────────────────────── */
 function cancelRollForm() {
   state.ui.rollFormId = null;
   renderLog();
@@ -2628,6 +2177,7 @@ function confirmRoll(id) {
     subtasks:   (entry.subtasks || []).map(s => ({ ...s, done: false })), // carry subtasks, reset done
     rolledFrom: state.notes.date,
     rolledTo:   null,
+    autoRollover: !!(entry.autoRollover), // carry flag if set
     comments:   [systemCmt, ...(entry.comments || [])], // ← ALL comments preserved
   };
 
@@ -2642,166 +2192,6 @@ function confirmRoll(id) {
   renderStats();
   showToast(`✓ Task rolled to ${targetLbl}`);
   checkAchievements();
-}
-
-/* ─────────────────────────────────────────────────────
-   AUTO-ROLLOVER — per-task flag + day-change logic
-   When state.settings.autoRollover is on, any entry with
-   entry.autoRollover=true that is still incomplete at the
-   start of a new day gets silently rolled to today.
-   A single modal then prompts for time-spent + note on
-   each carried task before the user starts their day.
-───────────────────────────────────────────────────── */
-
-function toggleAutoRollover(id) {
-  // Search ALL dates, not just the current view — findEntry only checks state.notes.date
-  let entry = null;
-  for (const dateStr of Object.keys(state.notes.entries)) {
-    const found = state.notes.entries[dateStr].find(e => e.id === id);
-    if (found) { entry = found; break; }
-  }
-  if (!entry) return;
-  entry.autoRollover = !entry.autoRollover;
-  save();
-  renderLog();
-  const label = entry.autoRollover ? 'Auto-carry ON — task rolls to next day if incomplete' : 'Auto-carry OFF';
-  showToast(label);
-}
-
-// Called at startup when a new day is detected.
-// Walks ALL dates between prevDate and today (handles multi-day gaps).
-// Silently rolls autoRollover=true, done=false entries forward to today.
-// Returns an array of { newEntry, sourceDate, origEntry } for the modal.
-function checkAutoRollover(prevDate) {
-  if (!state.settings.autoRollover) return [];
-  const today = todayStr();
-  if (!prevDate || prevDate >= today) return [];
-
-  // Collect all dates between prevDate and today (exclusive) that have pending flagged tasks
-  const allRolled = [];
-  let cursor = prevDate;
-
-  while (cursor < today) {
-    const srcEntries = state.notes.entries[cursor] || [];
-    const toRoll = srcEntries.filter(e => e.autoRollover && !e.done && !e.rolledTo);
-
-    toRoll.forEach(entry => {
-      const sourceLbl = fmtDate(cursor)[0];
-      const systemCmt = {
-        id:     (Date.now() + 1).toString(),
-        text:   '\u21a9 Auto-carried from ' + sourceLbl,
-        time:   nowTime(),
-        ts:     Date.now() + 1,
-        system: true,
-      };
-      const newEntry = {
-        id:           Date.now().toString(),
-        content:      entry.content,
-        notes:        entry.notes || '',
-        cat:          entry.cat,
-        priority:     entry.priority,
-        tags:         [...(entry.tags || [])],
-        time:         nowTime(),
-        ts:           Date.now(),
-        done:         false,
-        pomodoros:    0,
-        subtasks:     (entry.subtasks || []).map(s => ({ ...s, done: false })),
-        rolledFrom:   cursor,
-        rolledTo:     null,
-        autoRollover: true,   // carry the flag forward
-        comments:     [systemCmt, ...(entry.comments || [])],
-      };
-      if (!state.notes.entries[today]) state.notes.entries[today] = [];
-      state.notes.entries[today].unshift(newEntry);
-      entry.rolledTo = today;
-      allRolled.push({ newEntry, sourceDate: cursor, origEntry: entry });
-    });
-
-    // Advance to next day
-    cursor = offsetDate(cursor, 1);
-  }
-
-  if (allRolled.length) {
-    save();
-    renderLog();
-    renderCalendar();
-    renderStats();
-    renderGhostBanner();
-    renderGhostDrawer();
-  }
-  return allRolled;
-}
-
-// Show the "morning review" modal for auto-carried tasks
-function showAutoRollModal(rolls) {
-  if (!rolls || !rolls.length) return;
-  const modal = document.getElementById('autoRollModal');
-  const list  = document.getElementById('autoRollList');
-  if (!modal || !list) return;
-
-  list.innerHTML = rolls.map(function(r, i) {
-    const cat  = getAllCats()[r.newEntry.cat] || CATS.other;
-    const lbl  = fmtDate(r.sourceDate)[0];
-    return '<div class="ar-item" id="ar-item-' + i + '">'
-      + '<div class="ar-item-header">'
-      + '<span class="ar-cat-badge">' + cat.emoji + '</span>'
-      + '<div class="ar-item-body">'
-      + '<div class="ar-task-text">' + esc(r.newEntry.content) + '</div>'
-      + '<div class="ar-task-meta">carried from <strong>' + lbl + '</strong></div>'
-      + '</div>'
-      + '</div>'
-      + '<div class="ar-fields">'
-      + '<div class="ar-field">'
-      + '<label class="ar-label">Time spent yesterday <span class="ar-optional">(optional)</span></label>'
-      + '<input class="ar-input" id="ar-time-' + i + '" placeholder="e.g. 2 hrs, 45 min…" autocomplete="off" />'
-      + '</div>'
-      + '<div class="ar-field">'
-      + '<label class="ar-label">Roll note <span class="ar-optional">(optional)</span></label>'
-      + '<input class="ar-input" id="ar-note-' + i + '" placeholder="What happened? What\'s still needed?" autocomplete="off" />'
-      + '</div>'
-      + '</div>'
-      + '</div>';
-  }).join('');
-
-  // Store rolls on the modal for the save handler
-  modal._rolls = rolls;
-  openModal('autoRollModal');
-
-  // Focus first input
-  setTimeout(function() {
-    const first = document.getElementById('ar-time-0');
-    if (first) first.focus();
-  }, 120);
-}
-
-function saveAutoRollModal() {
-  const modal = document.getElementById('autoRollModal');
-  if (!modal || !modal._rolls) { closeModal('autoRollModal'); return; }
-  const rolls = modal._rolls;
-
-  rolls.forEach(function(r, i) {
-    const timeVal = (document.getElementById('ar-time-' + i)?.value || '').trim();
-    const noteVal = (document.getElementById('ar-note-' + i)?.value || '').trim();
-
-    // Write timeSpent back to the ORIGINAL (prev-day) entry
-    if (timeVal) r.origEntry.timeSpent = timeVal;
-
-    // Append a user-visible comment on the new today entry if a note was given
-    if (noteVal) {
-      if (!r.newEntry.comments) r.newEntry.comments = [];
-      r.newEntry.comments.unshift({
-        id:   Date.now().toString() + Math.random(),
-        text: noteVal,
-        time: nowTime(),
-        ts:   Date.now(),
-      });
-    }
-  });
-
-  save();
-  renderLog();
-  closeModal('autoRollModal');
-  showToast('\u2713 Auto-carried tasks updated');
 }
 
 /* ─────────────────────────────────────────────────────
@@ -2857,15 +2247,6 @@ function renderLog() {
     const showRollForm = state.ui.rollFormId     === entry.id;
     const showStForm    = state.ui.subtaskFormId  === entry.id;
     const showTimeForm  = state.ui.timeSpentId    === entry.id;
-    const showReminderForm = state.ui.reminderFormId === entry.id;
-    // Pre-compute autoRollover button (avoids nested backtick)
-    const isAutoRoll = !!entry.autoRollover;
-    const autoRollTitle = isAutoRoll ? 'Auto-carry ON \u2014 click to disable' : 'Auto-carry OFF \u2014 click to enable daily auto-roll';
-    const autoRollBtn = (!entry.done && !entry.rolledTo)
-      ? '<button class="act-btn autoroll-btn' + (isAutoRoll ? ' autoroll-active' : '') + '" title="' + autoRollTitle + '" onclick="toggleAutoRollover(\'' + entry.id + '\')">'
-        + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
-        + '</button>'
-      : '';
 
     // ── Sub-tasks block ───────────────────────────────
     const subtasksHtml = `
@@ -2876,27 +2257,18 @@ function renderLog() {
             <span class="st-prog-lbl">${stDone}/${subtasks.length} done</span>
           </div>
           <div class="subtasks-list">
-            ${subtasks.map(st => {
-              const stReminderKey = entry.id + ':' + st.id;
-              const stReminderActive = state.ui.reminderFormId === stReminderKey;
-              const stReminderPanel = stReminderActive ? reminderPanelHtml(stReminderKey, st.reminder) : '';
-              const stReminderBell  = (st.reminder?.time || st.reminder?.date) ? '<span class="st-reminder-pill">🔔</span>' : '';
-              return `
+            ${subtasks.map(st => `
               <div class="subtask-item ${st.done ? 'st-done' : ''}" id="sti-wrap-${st.id}">
                 <label class="st-check">
                   <input type="checkbox" ${st.done ? 'checked' : ''}
                     onchange="toggleSubtask('${entry.id}','${st.id}')">
                   <span class="st-box"></span>
                 </label>
-                <span class="st-text" id="st-text-${st.id}">${esc(st.text)}${stReminderBell}</span>
+                <span class="st-text" id="st-text-${st.id}">${esc(st.text)}</span>
                 <input class="st-edit-input" id="st-ei-${st.id}" value="${esc(st.text)}"
                   style="display:none"
                   onkeydown="handleStEditKey(event,'${entry.id}','${st.id}')"
                   onclick="event.stopPropagation()" />
-                <button class="st-reminder-btn ${stReminderActive ? 'st-reminder-active' : ''}" title="Set reminder"
-                  onclick="toggleReminderForm('${entry.id}','${st.id}')">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-                </button>
                 <button class="st-edit" id="st-editbtn-${st.id}"
                   onclick="startEditSubtask('${entry.id}','${st.id}')" title="Edit">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="10" height="10"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
@@ -2905,9 +2277,7 @@ function renderLog() {
                   onclick="saveEditSubtask('${entry.id}','${st.id}')" title="Save">✓</button>
                 <button class="st-del" onclick="deleteSubtask('${entry.id}','${st.id}')"
                   title="Remove">✕</button>
-              </div>
-              ${stReminderPanel}`;
-            }).join('')}
+              </div>`).join('')}
           </div>` : ''}
         ${showStForm ? `
           <div class="add-st-row">
@@ -2933,39 +2303,16 @@ function renderLog() {
     const rolledToBadge = entry.rolledTo
       ? `<span class="rolled-badge rto">→ ${fmtDate(entry.rolledTo)[0]}</span>` : '';
 
-    // Comments HTML — split roll-history (system) from user comments
-    const sysCmts  = comments.filter(c => c.system);
-    const userCmts = comments.filter(c => !c.system);
-    const collapseByDefault = state.settings.rollHistoryCollapsed !== false;
-    const isRollOpen = !collapseByDefault || !!(state.ui.rollHistoryOpen || {})[entry.id];
-
-    const userCmtsHtml = userCmts.length > 0 ? `
+    // Comments HTML
+    const cmtsHtml = comments.length > 0 ? `
       <div class="entry-comments" id="cmts-${entry.id}">
-        ${userCmts.map(c => {
-          const delBtn = '<button class="cmt-del" onclick="deleteComment(\'' + entry.id + '\',\'' + c.id + '\')" title="Delete comment">✕</button>';
-          return '<div class="comment-item"><span class="cmt-time">' + c.time + '</span><span class="cmt-text">' + esc(c.text) + '</span>' + delBtn + '</div>';
-        }).join('')}
+        ${comments.map(c => `
+          <div class="comment-item ${c.system ? 'cmt-system' : ''}">
+            <span class="cmt-time">${c.time}</span>
+            <span class="cmt-text">${esc(c.text)}</span>
+            ${!c.system ? `<button class="cmt-del" onclick="deleteComment('${entry.id}','${c.id}')" title="Delete comment">✕</button>` : ''}
+          </div>`).join('')}
       </div>` : '';
-
-    const rollHistoryHtml = sysCmts.length > 0 ? (() => {
-      const chevron = isRollOpen ? '▾' : '▸';
-      const itemsHtml = sysCmts.map(c =>
-        '<div class="comment-item cmt-system">' +
-        '<span class="cmt-time">' + c.time + '</span>' +
-        '<span class="cmt-text">' + esc(c.text) + '</span>' +
-        '</div>'
-      ).join('');
-      return `
-        <div class="roll-history-wrap">
-          <button class="roll-history-toggle" onclick="toggleRollHistory('${entry.id}')">
-            <span class="rh-chevron">${chevron}</span>
-            Roll history (${sysCmts.length})
-          </button>
-          ${isRollOpen ? '<div class="roll-history-body">' + itemsHtml + '</div>' : ''}
-        </div>`;
-    })() : '';
-
-    const cmtsHtml = userCmtsHtml + rollHistoryHtml;
 
     // Add-comment form
     const cmtFormHtml = showCmtForm ? `
@@ -3009,14 +2356,7 @@ function renderLog() {
     const catColor = cat.color || '#6B7280';
 
     return `
-      <div class="log-entry ${doneCs}" data-id="${entry.id}">
-
-        <!-- ── Drag grip (hover to reveal, grab to reorder) ── -->
-        <div class="entry-grip">
-          <span class="entry-grip-icon">&#8942;&#8942;</span>
-          <span class="entry-grip-label">drag to reorder</span>
-          <span class="entry-grip-hint">dblclick to edit</span>
-        </div>
+      <div class="log-entry ${doneCs}" data-id="${entry.id}" draggable="true">
 
         <!-- ── Category side label ── -->
         <div class="cat-side-label" style="background:${catColor}">${cat.label}</div>
@@ -3057,8 +2397,6 @@ function renderLog() {
               ${entry.timeSpent ? `<span class="time-spent-badge">⏱ ${esc(entry.timeSpent)}</span>` : ''}
               ${subtasks.length > 0
                 ? `<span class="st-meta-pill ${stDone===subtasks.length?'st-all-done':''}">${stDone}/${subtasks.length} ✓</span>` : ''}
-              ${entry.reminder?.time || entry.reminder?.date
-                ? `<span class="reminder-meta-badge">🔔 ${entry.reminder.time || ""}${entry.reminder.date ? " " + entry.reminder.date.slice(5) : ""}</span>` : ""}
               ${comments.length > 0
                 ? `<button class="cmt-toggle-btn" onclick="toggleCommentSection('${entry.id}')">
                      💬 ${comments.length} comment${comments.length===1?'':'s'}
@@ -3066,10 +2404,6 @@ function renderLog() {
             </div>
           </div>
           <div class="entry-actions">
-            <button class="act-btn ${showReminderForm?'act-active':''} reminder-btn" title="Set reminder"
-              onclick="toggleReminderForm('${entry.id}')">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-            </button>
             <button class="act-btn ${showCmtForm?'act-active':''}" title="Add comment"
               onclick="toggleCommentForm('${entry.id}')">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -3079,6 +2413,15 @@ function renderLog() {
               onclick="showRollForm('${entry.id}')">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="12" y1="15" x2="16" y2="15"/><polyline points="14 13 16 15 14 17"/></svg>
             </button>` : ''}
+            ${(()=>{
+              const _isAR = !!entry.autoRollover;
+              const _arTitle = _isAR ? 'Auto-carry ON \u2014 click to disable' : 'Auto-carry OFF \u2014 click to enable daily auto-roll';
+              return (!entry.done && !entry.rolledTo)
+                ? '<button class="act-btn autoroll-btn' + (_isAR?' autoroll-active':'') + '" title="' + _arTitle + '" onclick="toggleAutoRollover(\'' + entry.id + '\')">'
+                  + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
+                  + '</button>'
+                : '';
+            })()}
             <button class="act-btn ${isTrack?'track-active':''}"
               title="${isTrack?'Stop tracking':'Track with pomodoro'}"
               onclick="trackEntry('${entry.id}')">
@@ -3087,7 +2430,6 @@ function renderLog() {
             <button class="act-btn" title="Edit" onclick="startEdit('${entry.id}')">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             </button>
-            ${autoRollBtn}
             <button class="act-btn del" title="Delete" onclick="delEntry('${entry.id}')">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
             </button>
@@ -3105,9 +2447,6 @@ function renderLog() {
               <button class="outline-btn sm-btn" onclick="skipTimeSpent('${entry.id}')">Skip</button>
             </div>
           </div>` : ''}
-
-        <!-- ── Reminder Panel ── -->
-        ${showReminderForm ? reminderPanelHtml(entry.id, entry.reminder) : ''}
 
         <!-- ── Comments ── -->
         ${cmtsHtml}
@@ -3469,33 +2808,28 @@ function renderHeatmap() {
 
 function populateCatSelects() {
   const cats = getAllCats();
-  const ids  = ['catSel', 'filterCat', 's-defcat'];
+  const ids  = ['catSel', 'filterCat'];
   ids.forEach(selId => {
     const sel = document.getElementById(selId);
     if (!sel) return;
     const cur = sel.value;
     sel.innerHTML = '';
-    // filterCat gets an "All categories" first option
+    // For filterCat add "All" option
     if (selId === 'filterCat') {
       sel.innerHTML = '<option value="">All categories</option>';
     }
     Object.entries(cats).forEach(([id, cat]) => {
       const opt = document.createElement('option');
       opt.value       = id;
-      opt.textContent = cat.emoji + ' ' + cat.label;
+      opt.textContent = `${cat.emoji} ${cat.label}`;
       sel.appendChild(opt);
     });
-    // Restore previous selection if still valid
+    // Restore previous selection if still valid, else fall back to defaultCat
     if ([...sel.options].some(o => o.value === cur)) {
       sel.value = cur;
-    } else if (selId === 'catSel' || selId === 's-defcat') {
-      // Prefer saved defaultCat, else first available
-      const def = state.settings.defaultCat || '';
-      if (def && [...sel.options].some(o => o.value === def)) {
-        sel.value = def;
-      } else if (sel.options.length > 0) {
-        sel.value = sel.options[0].value;
-      }
+    } else if (selId === 'catSel') {
+      const def = state.settings.defaultCat || 'work';
+      if ([...sel.options].some(o => o.value === def)) sel.value = def;
     }
   });
 }
@@ -3509,20 +2843,12 @@ function renderCategoryManager() {
       onclick="selectCatColor('${c}')" title="${c}"></span>`
   ).join('');
 
-  // Default cats — show with delete button; mark deleted ones with restore
-  const deleted = new Set(state.deletedBuiltinCats || []);
-  const defaultHtml = Object.entries(CATS).map(([key, cat]) => {
-    if (deleted.has(key)) {
-      return `<span class="cat-chip cat-chip-deleted" title="Deleted — click to restore">
-        ${cat.emoji} ${cat.label}
-        <button class="cat-chip-restore" onclick="restoreBuiltinCat('${key}')" title="Restore">↩</button>
-      </span>`;
-    }
-    return `<span class="cat-chip" style="background:${cat.color}20;border-color:${cat.color}40;color:${cat.color}">
+  // Default cats (read-only)
+  const defaultHtml = Object.entries(CATS).map(([, cat]) =>
+    `<span class="cat-chip" style="background:${cat.color}20;border-color:${cat.color}40;color:${cat.color}">
        ${cat.emoji} ${cat.label}
-       <button class="cat-chip-del" onclick="deleteBuiltinCat('${key}')" title="Delete">✕</button>
-     </span>`;
-  }).join('');
+     </span>`
+  ).join('');
 
   // Custom cats
   const customHtml = (state.customCats || []).length === 0
@@ -3595,92 +2921,23 @@ function addCustomCat() {
   showToast(`✓ Category "${emoji} ${label}" created!`);
 }
 
-function toggleNewCatPanel(open) {
-  const panel = document.getElementById('newCatPanel');
-  const btn   = document.getElementById('toggleNewCat');
-  if (!panel || !btn) return;
-  if (open) {
-    panel.style.display = '';
-    btn.dataset.active = 'true';
-    // Populate color swatches
-    const sw = document.getElementById('inlineCatSwatches');
-    if (sw && !sw.children.length) {
-      sw.innerHTML = CAT_COLOR_PRESETS.map(c =>
-        `<span class="cat-swatch" data-color="${c}" style="background:${c}"
-          onclick="selectInlineCatColor('${c}')" title="${c}"></span>`
-      ).join('');
-      selectInlineCatColor(CAT_COLOR_PRESETS[6]);
-    }
-    setTimeout(() => document.getElementById('inlineCatEmoji')?.focus(), 60);
-  } else {
-    panel.style.display = 'none';
-    btn.dataset.active = 'false';
-    const e = document.getElementById('inlineCatEmoji');
-    const n = document.getElementById('inlineCatName');
-    if (e) e.value = '';
-    if (n) n.value = '';
-  }
-}
+function deleteCustomCat(id) {
+  // Check if any entries use this category
+  const usedCount = Object.values(state.notes.entries)
+    .flat()
+    .filter(e => e.cat === id).length;
 
-function selectInlineCatColor(color) {
-  const hidden = document.getElementById('inlineCatColor');
-  if (hidden) hidden.value = color;
-  document.querySelectorAll('#inlineCatSwatches .cat-swatch').forEach(s => {
-    s.classList.toggle('selected', s.dataset.color === color);
-  });
-}
+  if (usedCount > 0 && !confirm(`${usedCount} task(s) use this category. They'll be changed to "Other". Delete anyway?`)) return;
 
-function addCatInline() {
-  const emoji = document.getElementById('inlineCatEmoji')?.value.trim() || '🏷️';
-  const label = document.getElementById('inlineCatName')?.value.trim();
-  const color = document.getElementById('inlineCatColor')?.value || '#3B82F6';
-  if (!label) { document.getElementById('inlineCatName')?.focus(); showToast('Enter a category name.'); return; }
-  const all = getAllCats();
-  if (Object.values(all).some(c => c.label.toLowerCase() === label.toLowerCase())) {
-    showToast('A category with that name already exists.'); return;
-  }
-  const id = 'cat_' + Date.now().toString(36);
-  if (!state.customCats) state.customCats = [];
-  state.customCats.push({ id, label, emoji, color });
+  // Reassign entries to 'other'
+  Object.values(state.notes.entries).flat().forEach(e => { if (e.cat === id) e.cat = 'other'; });
+
+  state.customCats = (state.customCats || []).filter(c => c.id !== id);
   save();
   populateCatSelects();
-  // Switch the CATEGORY selector to the new cat
-  const sel = document.getElementById('catSel');
-  if (sel) sel.value = id;
-  toggleNewCatPanel(false);
-  showToast(`✓ "${emoji} ${label}" created & selected!`);
-}
-
-function deleteCustomCat(id) {
-  const usedCount = Object.values(state.notes.entries).flat().filter(e => e.cat === id).length;
-  if (usedCount > 0 && !confirm(`${usedCount} task(s) use this category. They'll be changed to "Other". Delete anyway?`)) return;
-  Object.values(state.notes.entries).flat().forEach(e => { if (e.cat === id) e.cat = 'other'; });
-  state.customCats = (state.customCats || []).filter(c => c.id !== id);
-  save(); populateCatSelects(); renderCategoryManager(); renderLog();
+  renderCategoryManager();
+  renderLog();
   showToast('Category deleted.');
-}
-
-function deleteBuiltinCat(key) {
-  const cat = CATS[key];
-  if (!cat) return;
-  const usedCount = Object.values(state.notes.entries).flat().filter(e => e.cat === key).length;
-  if (usedCount > 0 && !confirm(`${usedCount} task(s) use "${cat.emoji} ${cat.label}". They'll be changed to "Other". Delete anyway?`)) return;
-  Object.values(state.notes.entries).flat().forEach(e => { if (e.cat === key) e.cat = 'other'; });
-  if (!state.deletedBuiltinCats) state.deletedBuiltinCats = [];
-  if (!state.deletedBuiltinCats.includes(key)) state.deletedBuiltinCats.push(key);
-  // If defaultCat is being deleted, fall back to first available
-  if (state.settings.defaultCat === key) {
-    state.settings.defaultCat = Object.keys(getAllCats())[0] || 'other';
-  }
-  save(); populateCatSelects(); renderCategoryManager(); renderLog();
-  showToast(`"${cat.emoji} ${cat.label}" hidden. You can restore it anytime.`);
-}
-
-function restoreBuiltinCat(key) {
-  state.deletedBuiltinCats = (state.deletedBuiltinCats || []).filter(k => k !== key);
-  save(); populateCatSelects(); renderCategoryManager();
-  const cat = CATS[key];
-  showToast(`"${cat.emoji} ${cat.label}" restored.`);
 }
 
 /* ─────────────────────────────────────────────────────
@@ -3697,7 +2954,6 @@ function loadSettingsUI() {
   document.getElementById('s-autoWork').checked  = s.autoStartWork;
   document.getElementById('s-notifs').checked    = s.desktopNotifs;
   document.getElementById('s-eod').checked       = s.endOfDaySummary;
-  if (document.getElementById('s-rollCollapse')) document.getElementById('s-rollCollapse').checked = s.rollHistoryCollapsed !== false;
   if (document.getElementById('s-autoRollover')) document.getElementById('s-autoRollover').checked = !!s.autoRollover;
   // new
   const accent = s.accentColor || '#7C3AED';
@@ -3711,15 +2967,7 @@ function loadSettingsUI() {
   if (document.getElementById('s-goal'))     document.getElementById('s-goal').value    = s.dailyGoal   || 0;
   if (document.getElementById('s-24h'))      document.getElementById('s-24h').checked   = !!s.timeFormat24;
   if (document.getElementById('s-weekSun'))  document.getElementById('s-weekSun').checked = !s.weekStartMonday;
-  if (document.getElementById('s-defcat')) {
-    const defSel = document.getElementById('s-defcat');
-    // Only set if the value still exists in the (already-populated) options
-    const defVal = s.defaultCat || '';
-    if (defVal && [...defSel.options].some(o => o.value === defVal)) {
-      defSel.value = defVal;
-    }
-  }
-  if (document.getElementById('s-ghostDisplay')) document.getElementById('s-ghostDisplay').value = s.ghostDisplay || 'both';
+  if (document.getElementById('s-defcat'))   document.getElementById('s-defcat').value  = s.defaultCat  || 'work';
   // live preview hooks
   const fsSlider = document.getElementById('s-fontsize');
   if (fsSlider) {
@@ -3751,8 +2999,7 @@ function applySettings() {
   s.autoStartWork       = document.getElementById('s-autoWork').checked;
   s.desktopNotifs       = document.getElementById('s-notifs').checked;
   s.endOfDaySummary     = document.getElementById('s-eod').checked;
-  s.rollHistoryCollapsed = document.getElementById('s-rollCollapse')?.checked ?? true;
-  s.autoRollover         = document.getElementById('s-autoRollover')?.checked || false;
+  s.autoRollover        = document.getElementById('s-autoRollover')?.checked || false;
   // new
   s.accentColor      = document.getElementById('s-accent')?.value    || '#7C3AED';
   s.fontSize         = clamp(document.getElementById('s-fontsize')?.value || 16, 13, 20);
@@ -3762,19 +3009,13 @@ function applySettings() {
   s.dailyGoal        = clamp(document.getElementById('s-goal')?.value || 0, 0, 50);
   s.timeFormat24     = document.getElementById('s-24h')?.checked     || false;
   s.weekStartMonday  = !(document.getElementById('s-weekSun')?.checked || false);
-  // defaultCat: use the select value, but fall back to first available cat if it's somehow missing
-  const defCatSel = document.getElementById('s-defcat');
-  const defCatVal = defCatSel?.value || '';
-  s.defaultCat = (defCatVal && getAllCats()[defCatVal]) ? defCatVal : (Object.keys(getAllCats())[0] || 'other');
-  s.ghostDisplay     = document.getElementById('s-ghostDisplay')?.value || 'both';
+  s.defaultCat       = document.getElementById('s-defcat')?.value    || 'work';
 
   applyAccentColor(s.accentColor);
   document.documentElement.style.fontSize = s.fontSize + 'px';
   applyRingStyle(s.ringStyle);
   updateClocks();
   renderCalendar();
-  renderGhostBanner();
-  renderGhostDrawer();
 
   if (s.desktopNotifs && 'Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission();
@@ -3813,6 +3054,158 @@ function sendDesktopNotif(title, body) {
   try { new Notification(title, { body, tag: 'dailyflow' }); } catch (_) {}
 }
 
+/* ─────────────────────────────────────────────────────
+   AUTO-ROLLOVER  (per-task ↺ flag + morning review)
+   When state.settings.autoRollover is on, any entry with
+   entry.autoRollover=true that is still incomplete at the
+   start of a new day gets silently rolled to today.
+   A single modal then prompts for time-spent + note on
+   each carried task before the user starts their day.
+───────────────────────────────────────────────────── */
+
+function toggleAutoRollover(id) {
+  // Search ALL dates, not just the current view — findEntry only checks state.notes.date
+  let entry = null;
+  for (const dateStr of Object.keys(state.notes.entries)) {
+    const found = state.notes.entries[dateStr].find(e => e.id === id);
+    if (found) { entry = found; break; }
+  }
+  if (!entry) return;
+  entry.autoRollover = !entry.autoRollover;
+  save();
+  renderLog();
+  const label = entry.autoRollover ? 'Auto-carry ON — task rolls to next day if incomplete' : 'Auto-carry OFF';
+  showToast(label);
+}
+
+// Called at startup when a new day is detected.
+// Walks ALL dates between prevDate and today (handles multi-day gaps).
+// Silently rolls autoRollover=true, done=false entries forward to today.
+// Returns an array of { newEntry, sourceDate, origEntry } for the modal.
+function checkAutoRollover(prevDate) {
+  if (!state.settings.autoRollover) return [];
+  const today = todayStr();
+  if (!prevDate || prevDate >= today) return [];
+
+  const allRolled = [];
+  let cursor = prevDate;
+
+  while (cursor < today) {
+    const srcEntries = state.notes.entries[cursor] || [];
+    const toRoll = srcEntries.filter(e => e.autoRollover && !e.done && !e.rolledTo);
+
+    toRoll.forEach(entry => {
+      const sourceLbl = fmtDate(cursor)[0];
+      const systemCmt = {
+        id:     (Date.now() + 1).toString(),
+        text:   '\u21a9 Auto-carried from ' + sourceLbl,
+        time:   nowTime(),
+        ts:     Date.now() + 1,
+        system: true,
+      };
+      const newEntry = {
+        id:           Date.now().toString(),
+        content:      entry.content,
+        notes:        entry.notes || '',
+        cat:          entry.cat,
+        priority:     entry.priority,
+        tags:         [...(entry.tags || [])],
+        time:         nowTime(),
+        ts:           Date.now(),
+        done:         false,
+        pomodoros:    0,
+        subtasks:     (entry.subtasks || []).map(s => ({ ...s, done: false })),
+        rolledFrom:   cursor,
+        rolledTo:     null,
+        autoRollover: true,
+        comments:     [systemCmt, ...(entry.comments || [])],
+      };
+      if (!state.notes.entries[today]) state.notes.entries[today] = [];
+      state.notes.entries[today].unshift(newEntry);
+      entry.rolledTo = today;
+      allRolled.push({ newEntry, sourceDate: cursor, origEntry: entry });
+    });
+
+    cursor = offsetDate(cursor, 1);
+  }
+
+  if (allRolled.length) {
+    save();
+    renderLog();
+    renderCalendar();
+    renderStats();
+  }
+  return allRolled;
+}
+
+function showAutoRollModal(rolls) {
+  if (!rolls || !rolls.length) return;
+  const modal = document.getElementById('autoRollModal');
+  const list  = document.getElementById('autoRollList');
+  if (!modal || !list) return;
+
+  list.innerHTML = rolls.map(function(r, i) {
+    const cat  = getAllCats()[r.newEntry.cat] || CATS.other;
+    const lbl  = fmtDate(r.sourceDate)[0];
+    return '<div class="ar-item" id="ar-item-' + i + '">'
+      + '<div class="ar-item-header">'
+      + '<span class="ar-cat-badge">' + cat.emoji + '</span>'
+      + '<div class="ar-item-body">'
+      + '<div class="ar-task-text">' + esc(r.newEntry.content) + '</div>'
+      + '<div class="ar-task-meta">carried from <strong>' + lbl + '</strong></div>'
+      + '</div>'
+      + '</div>'
+      + '<div class="ar-fields">'
+      + '<div class="ar-field">'
+      + '<label class="ar-label">Time spent yesterday <span class="ar-optional">(optional)</span></label>'
+      + '<input class="ar-input" id="ar-time-' + i + '" placeholder="e.g. 2 hrs, 45 min…" autocomplete="off" />'
+      + '</div>'
+      + '<div class="ar-field">'
+      + '<label class="ar-label">Roll note <span class="ar-optional">(optional)</span></label>'
+      + '<input class="ar-input" id="ar-note-' + i + '" placeholder="What happened? What\'s still needed?" autocomplete="off" />'
+      + '</div>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+
+  modal._rolls = rolls;
+  openModal('autoRollModal');
+
+  setTimeout(function() {
+    const first = document.getElementById('ar-time-0');
+    if (first) first.focus();
+  }, 120);
+}
+
+function saveAutoRollModal() {
+  const modal = document.getElementById('autoRollModal');
+  if (!modal || !modal._rolls) { closeModal('autoRollModal'); return; }
+  const rolls = modal._rolls;
+
+  rolls.forEach(function(r, i) {
+    const timeVal = (document.getElementById('ar-time-' + i)?.value || '').trim();
+    const noteVal = (document.getElementById('ar-note-' + i)?.value || '').trim();
+
+    if (timeVal) r.origEntry.timeSpent = timeVal;
+
+    if (noteVal) {
+      if (!r.newEntry.comments) r.newEntry.comments = [];
+      r.newEntry.comments.unshift({
+        id:   Date.now().toString() + Math.random(),
+        text: noteVal,
+        time: nowTime(),
+        ts:   Date.now(),
+      });
+    }
+  });
+
+  save();
+  renderLog();
+  closeModal('autoRollModal');
+  if (typeof modal._onClose === 'function') { const cb = modal._onClose; modal._onClose = null; cb(); }
+  showToast('\u2713 Auto-carried tasks updated');
+}
+
 function checkEod() {
   const shown    = localStorage.getItem(pk('eod_shown'));
   const prevDate = localStorage.getItem(pk('lastDate'));
@@ -3823,7 +3216,6 @@ function checkEod() {
     if (rolled.length) {
       // Show morning-review modal; EOD summary will show after it closes
       showAutoRollModal(rolled);
-      // Still show EOD if enabled (we queue it to open after the roll modal closes)
       if (state.settings.endOfDaySummary && shown !== todayStr()) {
         const rollModal = document.getElementById('autoRollModal');
         if (rollModal) {
@@ -3837,7 +3229,7 @@ function checkEod() {
           };
         }
       }
-      localStorage.setItem(pk('eod_shown'), todayStr()); // mark shown regardless
+      localStorage.setItem(pk('eod_shown'), todayStr());
       return;
     }
   }
@@ -4288,7 +3680,7 @@ function switchView(view) {
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `v-${view}`));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   if (view === 'analytics') renderAnalytics();
-  if (view === 'settings')  { populateCatSelects(); loadSettingsUI(); renderCategoryManager(); }
+  if (view === 'settings')  { loadSettingsUI(); renderCategoryManager(); }
 }
 
 /* ─────────────────────────────────────────────────────
@@ -4296,13 +3688,7 @@ function switchView(view) {
 ───────────────────────────────────────────────────── */
 
 function openModal(id)  { document.getElementById(id).classList.add('open'); }
-function closeModal(id) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.classList.remove('open');
-  // Fire _onClose callback if set (used by autoRollModal to chain EOD modal)
-  if (el._onClose) { const cb = el._onClose; el._onClose = null; cb(); }
-}
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 
 /* ─────────────────────────────────────────────────────
    CLOCKS
@@ -4438,14 +3824,7 @@ function applyAccentColor(hex) {
   root.style.setProperty('--primary-h',    darken(hex, 16));
   root.style.setProperty('--primary-glow', `rgba(${r},${g},${b},.25)`);
   root.style.setProperty('--c-work',       hex);
-  // RGB channels for rgba() in CSS
-  root.style.setProperty('--pr', r);
-  root.style.setProperty('--pg', g);
-  root.style.setProperty('--pb', b);
-  // update meta theme-color
-  const metaTheme = document.querySelector('meta[name="theme-color"]');
-  if (metaTheme) metaTheme.content = hex;
-  // update ring regardless of mode
+  // also update ring stroke if in work mode
   const ring = document.getElementById('timerRing');
   if (ring && state.timer.mode === 'work') ring.style.stroke = hex;
   // update wave
@@ -4527,31 +3906,14 @@ function applyWarmLight(val) {
 function initDragDrop() {
   const log = document.getElementById('log');
 
-  // Only start drag when the entry-grip is grabbed — same pattern as sidebar panels
-  log.addEventListener('mousedown', e => {
-    const grip = e.target.closest('.entry-grip');
-    if (grip) {
-      const card = grip.closest('[data-id]');
-      if (card) card.draggable = true;
-    }
-  });
-
   log.addEventListener('dragstart', e => {
-    // Only allow drag if card was set draggable via grip mousedown
     const el = e.target.closest('[data-id]');
-    if (el && el.draggable) {
-      _dragId = el.dataset.id;
-      el.classList.add('dragging');
-      e.dataTransfer.effectAllowed = 'move';
-    } else {
-      e.preventDefault();
-    }
+    if (el) { _dragId = el.dataset.id; el.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; }
   });
 
   log.addEventListener('dragend', () => {
     document.querySelectorAll('.log-entry.dragging, .log-entry.drag-over').forEach(el => {
       el.classList.remove('dragging', 'drag-over');
-      el.draggable = false; // reset
     });
     _dragId = null;
   });
@@ -4569,17 +3931,6 @@ function initDragDrop() {
     e.preventDefault();
     const el = e.target.closest('[data-id]');
     if (el && _dragId && el.dataset.id !== _dragId) reorderEntries(_dragId, el.dataset.id);
-  });
-
-  // Double-click on entry text → open edit mode
-  log.addEventListener('dblclick', e => {
-    // Don't trigger if user is double-clicking a button, input, checkbox, or link
-    if (e.target.closest('button, input, textarea, select, a, label')) return;
-    const card = e.target.closest('[data-id]');
-    if (card) {
-      e.preventDefault();
-      startEdit(card.dataset.id, true);
-    }
   });
 }
 
@@ -4617,7 +3968,7 @@ function initKeyboard() {
    Uses HTML5 drag-and-drop on the .drag-grip handle.
    Persisted to localStorage as df2_sidebarOrder.
 ───────────────────────────────────────────────────── */
-const SIDEBAR_DEFAULT_ORDER = ['timer','stats','ghosts','ambient','qnotes','calendar'];
+const SIDEBAR_DEFAULT_ORDER = ['timer','stats','ambient','qnotes','calendar'];
 const SIDEBAR_ORDER_KEY = 'df2_sidebarOrder';
 
 function loadSidebarOrder() {
@@ -4779,13 +4130,6 @@ function init() {
     btn.dataset.active = 'true';
   });
 
-  document.getElementById('toggleNewCat').addEventListener('click', () => {
-    const panel = document.getElementById('newCatPanel');
-    const btn   = document.getElementById('toggleNewCat');
-    const isOpen = btn.dataset.active === 'true';
-    toggleNewCatPanel(!isOpen);
-  });
-
 
   document.getElementById('bannerStop').addEventListener('click', () => {
     state.timer.activeEntryId = null; updateSessionBanner(); renderLog();
@@ -4845,9 +4189,8 @@ function init() {
 
   // EOD modal
   document.getElementById('closeEod').addEventListener('click', () => closeModal('eodModal'));
-  document.getElementById('closeEodBtn').addEventListener('click', () => closeModal('eodModal'));
-  // autoRollModal close triggers saveAutoRollModal (logs time + notes, then fires _onClose if set)
   document.getElementById('closeAutoRoll')?.addEventListener('click', saveAutoRollModal);
+  document.getElementById('closeEodBtn').addEventListener('click', () => closeModal('eodModal'));
 
   // Ambient sound
   document.querySelectorAll('.amb-btn').forEach(btn => {

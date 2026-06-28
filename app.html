@@ -115,7 +115,7 @@
     <!-- Profile Selector -->
     <div class="profile-sel" id="profileSel">
       <button class="profile-btn" id="profileBtn">
-        <span class="p-avatar" id="pAvatarBtn" style="background:var(--primary)">👤</span>
+        <span class="p-avatar" id="pAvatarBtn" style="background:#7C3AED">👤</span>
         <span class="p-name"   id="pNameBtn">Personal</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="11" height="11"><polyline points="6 9 12 15 18 9"/></svg>
       </button>
@@ -337,18 +337,6 @@
         </div>
       </div>
 
-      <!-- Ghost Tasks Drawer -->
-      <div class="card ghost-drawer-card" id="ghostDrawerCard" data-panel="ghosts">
-        <div class="drag-grip" title="Drag to reorder"><span class="drag-grip-icon">&#8942;&#8942;</span><span class="drag-grip-label">GHOSTS</span></div>
-        <div class="ghost-drawer-hdr" onclick="toggleGhostDrawer()">
-          <span class="ghost-drawer-hdr-icon">&#128123;</span>
-          <span class="ghost-drawer-hdr-label">Abandoned Tasks</span>
-          <span class="ghost-drawer-count-badge" id="ghostDrawerCount">0</span>
-          <span class="ghost-drawer-chevron" id="ghostDrawerChevron">&#9654;</span>
-        </div>
-        <div id="ghostDrawerBody" style="display:none"></div>
-      </div>
-
       <!-- Ambient Sound -->
       <div class="card ambient-card" data-panel="ambient">
         <div class="drag-grip" title="Drag to reorder"><span class="drag-grip-icon">&#8942;&#8942;</span><span class="drag-grip-label">AMBIENT</span></div>
@@ -447,7 +435,7 @@
           <!-- ── Meta chips row ── -->
           <div class="cmd-meta-row">
             <div class="cmd-chip-group">
-              <span class="cmd-chip-label">CATEGORY</span>
+              <span class="cmd-chip-label">CAT</span>
               <select class="cmd-chip-sel" id="catSel">
                 <option value="work">💼 Work</option>
                 <option value="personal">🏠 Personal</option>
@@ -458,7 +446,7 @@
               </select>
             </div>
             <div class="cmd-chip-group">
-              <span class="cmd-chip-label">PRIORITY</span>
+              <span class="cmd-chip-label">PRI</span>
               <select class="cmd-chip-sel" id="priSel">
                 <option value="none">— none</option>
                 <option value="high">🔴 High</option>
@@ -475,10 +463,6 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
               Sub-tasks
             </button>
-            <button class="cmd-toggle-btn" id="toggleNewCat" data-active="false">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              New Category
-            </button>
           </div>
 
           <!-- ── Notes panel ── -->
@@ -490,25 +474,6 @@
           <!-- ── Sub-tasks panel ── -->
           <div class="cmd-panel" id="newStList" style="display:none"></div>
 
-          <!-- ── Inline new category panel ── -->
-          <div class="cmd-panel" id="newCatPanel" style="display:none">
-            <div class="cmd-panel-label">// NEW CATEGORY</div>
-            <div class="inline-newcat-row">
-              <input class="inline-newcat-emoji" id="inlineCatEmoji" maxlength="2" placeholder="😀" />
-              <input class="inline-newcat-name" id="inlineCatName" maxlength="20" placeholder="Category name…"
-                onkeydown="if(event.key==='Enter') addCatInline()" />
-              <div class="inline-cat-swatches" id="inlineCatSwatches"></div>
-              <input type="hidden" id="inlineCatColor" value="#3B82F6" />
-            </div>
-            <div style="display:flex;gap:6px;margin-top:8px">
-              <button class="primary-btn sm-btn" onclick="addCatInline()">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><polyline points="20 6 9 17 4 12"/></svg>
-                Create
-              </button>
-              <button class="outline-btn sm-btn" onclick="toggleNewCatPanel(false)">Cancel</button>
-            </div>
-          </div>
-
         </div>
 
         <div class="session-banner" id="sessionBanner" style="display:none">
@@ -517,8 +482,6 @@
           <span class="banner-poms" id="bannerPoms">0 pomodoros</span>
           <button class="banner-stop" id="bannerStop">Stop tracking</button>
         </div>
-
-        <div id="ghostBanner" class="ghost-banner" style="display:none"></div>
 
         <div id="log"></div>
       </section>
@@ -699,12 +662,6 @@
               <label class="toggle-label"><input type="checkbox" id="s-eod" checked /><span class="toggle-slider"></span></label>
             </div>
             <div class="setting-toggle">
-              <span>Collapse roll history by default
-                <span class="setting-hint">ON = history hidden on all tasks, expand per task with ▸ &nbsp;·&nbsp; OFF = history always expanded on all tasks</span>
-              </span>
-              <label class="toggle-label"><input type="checkbox" id="s-rollCollapse" checked /><span class="toggle-slider"></span></label>
-            </div>
-            <div class="setting-toggle">
               <span>Auto-carry incomplete tasks
                 <span class="setting-hint">Tasks flagged ↺ roll to the next day automatically. You'll be asked for time spent each morning.</span>
               </span>
@@ -788,19 +745,12 @@
           <div class="setting-row">
             <label for="s-defcat">Default entry category</label>
             <select id="s-defcat" class="setting-sel">
-              <!-- populated dynamically by populateCatSelects() — respects deleted cats -->
-            </select>
-          </div>
-          <div class="setting-row">
-            <label for="s-ghostDisplay">
-              Ghost task display
-              <span class="setting-hint">How to show tasks abandoned in past days</span>
-            </label>
-            <select id="s-ghostDisplay" class="setting-sel">
-              <option value="both">👻 Banner + Sidebar drawer</option>
-              <option value="banner">📋 Log banner only</option>
-              <option value="drawer">🗂 Sidebar drawer only</option>
-              <option value="off">✗ Off</option>
+              <option value="work">💼 Work</option>
+              <option value="personal">🏠 Personal</option>
+              <option value="health">💪 Health</option>
+              <option value="study">📚 Study</option>
+              <option value="creative">🎨 Creative</option>
+              <option value="other">✨ Other</option>
             </select>
           </div>
         </div>
@@ -900,7 +850,6 @@
   </div>
 </div>
 
-<!-- ── Auto-Rollover Morning Review Modal ──────── -->
 <div class="modal-overlay" id="autoRollModal">
   <div class="modal ar-modal">
     <div class="modal-header">
