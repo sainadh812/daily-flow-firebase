@@ -2027,7 +2027,7 @@ function toggleDone(id) {
   }
 }
 
-function startEdit(id) {
+function startEdit(id, fromDblclick) {
   if (_editId && _editId !== id) cancelEdit(_editId);
   const entry    = findEntry(id);
   if (!entry) return;
@@ -2049,7 +2049,13 @@ function startEdit(id) {
     renderLog();
     _editId = null;
   } else {
-    // Enter edit mode
+    // Enter edit mode — flash confirms dblclick
+    if (fromDblclick) {
+      textEl.classList.remove('edit-flash');
+      void textEl.offsetWidth; // force reflow so re-adding the class re-triggers
+      textEl.classList.add('edit-flash');
+      setTimeout(() => textEl.classList.remove('edit-flash'), 260);
+    }
     textEl.classList.add('hide');
     inpEl.classList.add('show');
     if (ctrlsEl) ctrlsEl.classList.add('show');
@@ -2552,7 +2558,7 @@ function renderLog() {
     const catColor = cat.color || '#6B7280';
 
     return `
-      <div class="log-entry ${doneCs}" data-id="${entry.id}" draggable="true">
+      <div class="log-entry ${doneCs}" data-id="${entry.id}">
 
         <!-- ── Category side label ── -->
         <div class="cat-side-label" style="background:${catColor}">${cat.label}</div>
@@ -4229,14 +4235,30 @@ function applyWarmLight(val) {
 function initDragDrop() {
   const log = document.getElementById('log');
 
+  // Grip-only drag activation — set draggable only on grip mousedown, reset on dragend
+  log.addEventListener('mousedown', e => {
+    const grip = e.target.closest('.entry-grip');
+    if (grip) {
+      const card = grip.closest('[data-id]');
+      if (card) card.draggable = true;
+    }
+  });
+
   log.addEventListener('dragstart', e => {
     const el = e.target.closest('[data-id]');
-    if (el) { _dragId = el.dataset.id; el.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; }
+    if (el && el.draggable) {
+      _dragId = el.dataset.id;
+      el.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+    } else {
+      e.preventDefault(); // cancel accidental drags not from grip
+    }
   });
 
   log.addEventListener('dragend', () => {
-    document.querySelectorAll('.log-entry.dragging, .log-entry.drag-over').forEach(el => {
+    document.querySelectorAll('.log-entry').forEach(el => {
       el.classList.remove('dragging', 'drag-over');
+      el.draggable = false; // reset — must not stay permanently draggable
     });
     _dragId = null;
   });
@@ -4254,6 +4276,16 @@ function initDragDrop() {
     e.preventDefault();
     const el = e.target.closest('[data-id]');
     if (el && _dragId && el.dataset.id !== _dragId) reorderEntries(_dragId, el.dataset.id);
+  });
+
+  // Double-click to edit — delegated, guards interactive descendants
+  log.addEventListener('dblclick', e => {
+    if (e.target.closest('button, input, textarea, select, a, label')) return;
+    const card = e.target.closest('[data-id]');
+    if (card) {
+      e.preventDefault();
+      startEdit(card.dataset.id, true); // true = fromDblclick → triggers purple flash
+    }
   });
 }
 
