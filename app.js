@@ -569,7 +569,9 @@ const state = {
     month: new Date().getMonth(),
   },
   analytics: {
-    selectedDate: null,
+    selectedDate:    null,
+    chartWeekOffset: 0,     // 0=current week, -1=prev week, etc.
+    chartMode:       '7d',  // '7d' | '14d'
   },
   achievements: {
     unlocked: [],
@@ -2831,6 +2833,7 @@ function renderAnalytics() {
 
   renderAchievements();
   renderWeeklyChart();
+  renderBiWeeklyChart();  // NEW: bi-weekly view
   renderPieChart();
   renderTagCloud();
   renderHeatmap();
@@ -2889,6 +2892,128 @@ function renderWeeklyChart() {
     if (day.entries > 0) out += `<text x="${cx - bW/2}" y="${eY-4}" text-anchor="middle" font-size="10" fill="${txtFill}" style="pointer-events:none">${day.entries}</text>`;
     if (day.poms    > 0) out += `<text x="${cx + bW/2}" y="${pY-4}" text-anchor="middle" font-size="10" fill="${sel?'var(--primary)':'var(--text2)'}" style="pointer-events:none">${day.poms}</text>`;
     out += `<text x="${cx}" y="${H-pB/3}" text-anchor="middle" font-size="11" font-weight="${sel?'700':'400'}" fill="${sel?'var(--primary)':'var(--text2)'}" style="pointer-events:none">${day.label}</text>`;
+  });
+
+  svg.innerHTML = out;
+}
+
+function renderBiWeeklyChart() {
+  const svg = document.getElementById('weeklyChart');
+  const W=680, H=260, pL=46, pB=48, pT=18, pR=16;
+  const cW = W-pL-pR, cH = H-pB-pT;
+
+  // Days to show: 7 or 14 based on chartMode
+  const daysToShow = state.analytics.chartMode === '14d' ? 14 : 7;
+  const weeksLabel = state.analytics.chartMode === '14d' ? 'Last 2 Weeks' : 'Last 7 Days';
+
+  // Update header text + nav state
+  const periodEl = document.querySelector('.chart-period');
+  if (periodEl) {
+    const isOffset = state.analytics.chartWeekOffset > 0;
+    if (isOffset) {
+      const daysToShowLabel = state.analytics.chartMode === '14d' ? 14 : 7;
+      const offsetDays = state.analytics.chartWeekOffset * daysToShowLabel;
+      const fromStr = offsetDate(todayStr(), -(offsetDays + daysToShowLabel - 1));
+      const toStr   = offsetDate(todayStr(), -offsetDays);
+      const from = new Date(fromStr + 'T00:00:00');
+      const to   = new Date(toStr   + 'T00:00:00');
+      const fmt = d => d.toLocaleDateString('en-US', { month:'short', day:'numeric' });
+      periodEl.textContent = fmt(from) + ' – ' + fmt(to);
+    } else {
+      periodEl.textContent = weeksLabel;
+    }
+  }
+  // Disable next button when at current period
+  const nextBtn = document.getElementById('nextWeek');
+  if (nextBtn) nextBtn.disabled = state.analytics.chartWeekOffset === 0;
+
+  const days = [];
+  for (let i = daysToShow - 1; i >= 0; i--) {
+    const offset = i + state.analytics.chartWeekOffset * daysToShow;
+    const str = offsetDate(todayStr(), -offset);
+    const d   = new Date(str + 'T00:00:00');
+    days.push({
+      str,
+      label:   d.toLocaleDateString('en-US', { weekday:'short' }),
+      entries: (state.notes.entries[str] || []).length,
+      poms:    state.pomLog[str] || 0,
+      done:    state.notes.entries[str] ? state.notes.entries[str].filter(e => e.done).length : 0,
+    });
+  }
+
+  // Max value for scaling (entries, pomodoros, or completed tasks)
+  const maxV = Math.max(
+    ...days.flatMap(d => [d.entries, d.poms, d.done]),
+    1
+  );
+
+  // Bar geometry: 3 bars per day (entries, completed tasks, pomodoros), spaced
+  const grp  = cW / daysToShow;          // width per day-group
+  const subW = grp * 0.25;                // width per sub-bar
+  const gap  = (grp - 3 * subW) / 4;     // gap between bars and at edges
+
+  let out = '';
+
+  // Gridlines (4 horizontal lines)
+  for (let i = 0; i <= 4; i++) {
+    const y   = pT + cH - (i/4)*cH;
+    const val = Math.round((i/4)*maxV);
+    out += `<line x1="${pL}" y1="${y}" x2="${W-pR}" y2="${y}" stroke="var(--border)" stroke-width="1"/>`;
+    out += `<text x="${pL-6}" y="${y+4}" text-anchor="end" font-size="11" fill="var(--text3)">${val}</text>`;
+  }
+
+  days.forEach((day, i) => {
+    const dayX = pL + i * grp; // left edge of day-group
+
+    // Calculate bar positions
+    const bar1X = dayX + gap;
+    const bar2X = bar1X + subW + gap;
+    const bar3X = bar2X + subW + gap;
+
+    // Entry count (purple bar)
+    const entH    = (day.entries / maxV) * cH;
+    const entY    = pT + cH - entH;
+    const entOpa  = day.entries > 0 ? '1' : '.45';
+    const entFill = day.entries > 0 ? 'var(--primary)' : 'var(--border)';
+    const entTextFill = day.entries > 0 ? 'var(--primary)' : 'var(--text3)';
+
+    // Completed tasks (green bar)
+    const doneH   = (day.done / maxV) * cH;
+    const doneY   = pT + cH - doneH;
+    const doneOpa = day.done > 0 ? '1' : '.45';
+    const doneFill = day.done > 0 ? 'var(--success)' : 'var(--border)';
+    const doneTextFill = day.done > 0 ? 'var(--success)' : 'var(--text3)';
+
+    // Pomodoros (amber bar)
+    const pomH    = (day.poms / maxV) * cH;
+    const pomY    = pT + cH - pomH;
+    const pomOpa  = day.poms > 0 ? '1' : '.45';
+    const pomFill = day.poms > 0 ? 'var(--c-long)' : 'var(--border)';
+    const pomTextFill = day.poms > 0 ? 'var(--c-long)' : 'var(--text3)';
+
+    // Invisible click zone over the whole column
+    out += `<rect x="${dayX}" y="${pT}" width="${grp}" height="${cH + pB/2}" fill="transparent" style="cursor:pointer" onclick="selectAnalyticsDate('${day.str}')" title="${day.str}"/>`;
+
+    // Highlight background for selected day (full width)
+    if (day.str === state.analytics.selectedDate) {
+      out += `<rect x="${dayX + 2}" y="${pT}" width="${grp - 4}" height="${cH}" rx="4" fill="rgba(124,58,237,.06)"/>`;
+    }
+
+    // --- Three bars ---
+    // 1. Entries (purple)
+    out += `<rect x="${bar1X}" y="${entY}" width="${subW}" height="${entH}" rx="3" fill="${entFill}" opacity="${entOpa}" style="pointer-events:none"/>`;
+    if (day.entries > 0) out += `<text x="${bar1X + subW/2}" y="${entY-4}" text-anchor="middle" font-size="10" fill="${entTextFill}" style="pointer-events:none">${day.entries}</text>`;
+
+    // 2. Completed tasks (green)
+    out += `<rect x="${bar2X}" y="${doneY}" width="${subW}" height="${doneH}" rx="3" fill="${doneFill}" opacity="${doneOpa}" style="pointer-events:none"/>`;
+    if (day.done > 0) out += `<text x="${bar2X + subW/2}" y="${doneY-4}" text-anchor="middle" font-size="10" fill="${doneTextFill}" style="pointer-events:none">${day.done}</text>`;
+
+    // 3. Pomodoros (amber)
+    out += `<rect x="${bar3X}" y="${pomY}" width="${subW}" height="${pomH}" rx="3" fill="${pomFill}" opacity="${pomOpa}" style="pointer-events:none"/>`;
+    if (day.poms > 0) out += `<text x="${bar3X + subW/2}" y="${pomY-4}" text-anchor="middle" font-size="10" fill="${pomTextFill}" style="pointer-events:none">${day.poms}</text>`;
+
+    // Day label (Mon, Tue, etc) - centered under the group
+    out += `<text x="${dayX + grp/2}" y="${H - pB/3}" text-anchor="middle" font-size="11" fill="var(--text2)" style="pointer-events:none">${day.label}</text>`;
   });
 
   svg.innerHTML = out;
@@ -4387,6 +4512,23 @@ function init() {
 
   // EOD modal
   document.getElementById('closeEod').addEventListener('click', () => closeModal('eodModal'));
+
+  // Analytics chart week nav
+  document.getElementById('prevWeek')?.addEventListener('click', () => {
+    state.analytics.chartWeekOffset++;
+    renderBiWeeklyChart();
+  });
+  document.getElementById('nextWeek')?.addEventListener('click', () => {
+    if (state.analytics.chartWeekOffset > 0) {
+      state.analytics.chartWeekOffset--;
+      renderBiWeeklyChart();
+    }
+  });
+  document.getElementById('toggleWeekView')?.addEventListener('click', () => {
+    state.analytics.chartMode = state.analytics.chartMode === '7d' ? '14d' : '7d';
+    state.analytics.chartWeekOffset = 0; // reset to current period
+    renderBiWeeklyChart();
+  });
   document.getElementById('closeAutoRoll')?.addEventListener('click', saveAutoRollModal);
   document.getElementById('closeEodBtn').addEventListener('click', () => closeModal('eodModal'));
 

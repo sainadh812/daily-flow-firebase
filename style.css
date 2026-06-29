@@ -5,6 +5,7 @@
   --primary:      #7C3AED;
   --primary-h:    #6D28D9;
   --primary-glow: rgba(124,58,237,.25);
+  --success:      #10B981;
   --c-work:       #7C3AED;
   --c-short:      #059669;
   --c-short-glow: rgba(5,150,105,.25);
@@ -2258,3 +2259,40 @@ kbd {
 .ghost-btn:hover { opacity: .75; transform: scale(.97); }
 .ghost-roll    { background: rgba(var(--pr),var(--pg),var(--pb),.18); color: var(--primary); border-color: rgba(var(--pr),var(--pg),var(--pb),.3); }
 .ghost-dismiss { background: rgba(255,255,255,.05); color: var(--text3); border-color: var(--border); }
+
+/* ── Analytics Chart Controls ────────────────────── */
+.chart-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.chart-period {
+  font-size: .9rem;
+  font-weight: 600;
+  color: var(--text);
+  min-width: 80px;
+  text-align: center;
+}
+.nav-week,
+.toggle-week {
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.nav-week:hover,
+.toggle-week:hover {
+  background: rgba(var(--pr),var(--pg),var(--pb),.08);
+  border-color: var(--primary);
+}
+.nav-week:active,
+.toggle-week:active {
+  background: rgba(var(--pr),var(--pg),var(--pb),.12);
+}

@@ -533,10 +533,16 @@
 
         <div class="card chart-card">
           <div class="chart-header">
-            <p class="card-label">Last 7 Days</p>
+            <div class="chart-controls">
+              <button class="icon-btn nav-week" id="prevWeek" title="Previous week">&#9664;</button>
+              <span class="chart-period">Last 7 Days</span>
+              <button class="icon-btn nav-week" id="nextWeek" title="Next week">&#9654;</button>
+              <button class="icon-btn toggle-week" id="toggleWeekView" title="Toggle 7-day / 14-day view">&#8801;</button>
+            </div>
             <div class="chart-legend">
-              <span class="legend-dot" style="background:var(--primary);opacity:.45"></span><span>Entries</span>
-              <span class="legend-dot" style="background:var(--primary)"></span><span>Pomodoros</span>
+              <span class="legend-dot" style="background:var(--primary);opacity:.45"></span><span>Tasks</span>
+              <span class="legend-dot" style="background:var(--success);opacity:.45"></span><span>Completed</span>
+              <span class="legend-dot" style="background:var(--c-long);opacity:.45"></span><span>Pomodoros</span>
             </div>
           </div>
           <svg id="weeklyChart" class="bar-svg" viewBox="0 0 680 260" preserveAspectRatio="xMidYMid meet"></svg>
