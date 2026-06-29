@@ -2284,12 +2284,18 @@ function deleteSubtask(entryId, stId) {
 }
 
 /* ── Subtask edit in-place ──────────────────────────── */
-function startEditSubtask(entryId, stId) {
+function startEditSubtask(entryId, stId, fromDblclick) {
   const textEl   = document.getElementById(`st-text-${stId}`);
   const inputEl  = document.getElementById(`st-ei-${stId}`);
   const editBtn  = document.getElementById(`st-editbtn-${stId}`);
   const saveBtn  = document.getElementById(`st-savebtn-${stId}`);
   if (!textEl || !inputEl) return;
+  if (fromDblclick) {
+    textEl.classList.remove('st-edit-flash');
+    void textEl.offsetWidth;
+    textEl.classList.add('st-edit-flash');
+    setTimeout(() => textEl.classList.remove('st-edit-flash'), 260);
+  }
   textEl.style.display  = 'none';
   inputEl.style.display = 'block';
   if (editBtn) editBtn.style.display = 'none';
@@ -2460,7 +2466,7 @@ function renderLog() {
           </div>
           <div class="subtasks-list">
             ${subtasks.map(st => `
-              <div class="subtask-item ${st.done ? 'st-done' : ''}" id="sti-wrap-${st.id}">
+              <div class="subtask-item ${st.done ? 'st-done' : ''}" id="sti-wrap-${st.id}" data-stid="${st.id}" data-entryid="${entry.id}">
                 <label class="st-check">
                   <input type="checkbox" ${st.done ? 'checked' : ''}
                     onchange="toggleSubtask('${entry.id}','${st.id}')">
@@ -2559,6 +2565,13 @@ function renderLog() {
 
     return `
       <div class="log-entry ${doneCs}" data-id="${entry.id}">
+
+        <!-- ── Drag grip (hidden at rest, revealed on hover) ── -->
+        <div class="entry-grip">
+          <span class="entry-grip-icon">&#8942;&#8942;</span>
+          <span class="entry-grip-label">drag to reorder</span>
+          <span class="entry-grip-hint">dblclick to edit</span>
+        </div>
 
         <!-- ── Category side label ── -->
         <div class="cat-side-label" style="background:${catColor}">${cat.label}</div>
@@ -4281,6 +4294,16 @@ function initDragDrop() {
   // Double-click to edit — delegated, guards interactive descendants
   log.addEventListener('dblclick', e => {
     if (e.target.closest('button, input, textarea, select, a, label')) return;
+
+    // Check if dblclick was on a subtask row first
+    const stItem = e.target.closest('[data-stid]');
+    if (stItem) {
+      e.preventDefault();
+      startEditSubtask(stItem.dataset.entryid, stItem.dataset.stid, true);
+      return;
+    }
+
+    // Otherwise edit the main task card
     const card = e.target.closest('[data-id]');
     if (card) {
       e.preventDefault();
