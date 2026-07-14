@@ -901,6 +901,11 @@ body {
   display: flex; flex-direction: column; gap: 5px;
 }
 .entry-comments.hidden { display: none; }
+.entry-comments.cmt-collapsed { display: none; }
+
+/* Chevron expand/collapse button */
+.cmt-expand-btn svg { transition: transform 0.2s ease; }
+.cmt-expand-btn.cmt-arrow-open svg { transform: rotate(180deg); }
 
 .comment-item {
   display: flex; align-items: flex-start; gap: 8px; font-size: .82rem;

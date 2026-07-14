@@ -545,6 +545,7 @@ const state = {
     defaultCat:        'work',
     ghostDisplay:      'both',   // 'both' | 'banner' | 'drawer' | 'off'
     ghostDismissed:    [],
+    commentViewMode:   'expandcollapse', // 'expandcollapse' | 'expandonly'
   },
   ui: {
     view:          'log',
@@ -588,6 +589,7 @@ const DEFAULT_SETTINGS = {
   longBreakInterval: 4, autoStartBreaks: false, autoStartWork: false,
   desktopNotifs: false, endOfDaySummary: true, autoRollover: false, dark: false,
   warmLight: 0, timezone: 'local',
+  commentViewMode: 'expandcollapse', // 'expandcollapse' | 'expandonly'
 };
 
 const PROFILE_EMOJIS = [
@@ -2168,7 +2170,10 @@ function deleteComment(entryId, commentId) {
 
 function toggleCommentSection(id) {
   const el = document.getElementById(`cmts-${id}`);
-  if (el) el.classList.toggle('hidden');
+  if (!el) return;
+  const collapsed = el.classList.toggle('cmt-collapsed');
+  const arrow = document.getElementById(`cmtarrow-${id}`);
+  if (arrow) arrow.classList.toggle('cmt-arrow-open', !collapsed);
 }
 
 /* ─────────────────────────────────────────────────────
@@ -2512,8 +2517,9 @@ function renderLog() {
       ? `<span class="rolled-badge rto">→ ${fmtDate(entry.rolledTo)[0]}</span>` : '';
 
     // Comments HTML
+    const cmtMode = state.settings.commentViewMode || 'expandcollapse';
     const cmtsHtml = comments.length > 0 ? `
-      <div class="entry-comments" id="cmts-${entry.id}">
+      <div class="entry-comments cmt-collapsed" id="cmts-${entry.id}">
         ${comments.map(c => `
           <div class="comment-item ${c.system ? 'cmt-system' : ''}">
             <span class="cmt-time">${c.time}</span>
@@ -2619,6 +2625,14 @@ function renderLog() {
             </div>
           </div>
           <div class="entry-actions">
+            ${(comments.length > 0 && cmtMode === 'expandcollapse') ? `
+            <button class="act-btn cmt-expand-btn" id="cmtarrow-${entry.id}"
+              title="Expand/collapse comments"
+              onclick="toggleCommentSection('${entry.id}')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="13" height="13">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </button>` : ''}
             <button class="act-btn ${showCmtForm?'act-active':''}" title="Add comment"
               onclick="toggleCommentForm('${entry.id}')">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -3294,6 +3308,7 @@ function loadSettingsUI() {
   document.getElementById('s-eod').checked       = s.endOfDaySummary;
   if (document.getElementById('s-autoRollover')) document.getElementById('s-autoRollover').checked = !!s.autoRollover;
   if (document.getElementById('s-ghostDisplay')) document.getElementById('s-ghostDisplay').value = s.ghostDisplay || 'both';
+  if (document.getElementById('s-commentViewMode')) document.getElementById('s-commentViewMode').value = s.commentViewMode || 'expandcollapse';
   // new
   const accent = s.accentColor || '#7C3AED';
   const fsEl   = document.getElementById('s-fontsize');
@@ -3340,6 +3355,7 @@ function applySettings() {
   s.endOfDaySummary     = document.getElementById('s-eod').checked;
   s.autoRollover        = document.getElementById('s-autoRollover')?.checked || false;
   s.ghostDisplay        = document.getElementById('s-ghostDisplay')?.value   || 'both';
+  s.commentViewMode     = document.getElementById('s-commentViewMode')?.value || 'expandcollapse';
   // new
   s.accentColor      = document.getElementById('s-accent')?.value    || '#7C3AED';
   s.fontSize         = clamp(document.getElementById('s-fontsize')?.value || 16, 13, 20);
