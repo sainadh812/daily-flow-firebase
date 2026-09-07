@@ -155,6 +155,7 @@
     </nav>
 
     <div class="header-right">
+      <button class="outline-btn sync-status-btn" id="syncStatus" title="View save and sync status" onclick="openSyncStatus()">Saved locally</button>
       <!-- World Clock -->
       <div class="hdr-clock world-clock">
         <div class="wc-top">
@@ -299,6 +300,7 @@
           <button class="tab" data-mode="shortBreak">Short Break</button>
           <button class="tab" data-mode="longBreak">Long Break</button>
         </div>
+        <button class="outline-btn stopwatch-mode" data-timer-kind="stopwatch" onclick="setMode('stopwatch')">Stopwatch</button>
         <div class="timer-wrap">
           <svg class="ring-svg" viewBox="0 0 220 220">
             <circle class="ring-bg" cx="110" cy="110" r="96"/>
@@ -322,6 +324,8 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
           </button>
         </div>
+        <button class="outline-btn timer-finish" id="finishBtn">Finish &amp; save time</button>
+        <p class="timer-link" id="timerLinkedTask">No task linked · time still counts</p>
         <div class="pomodoro-dots" id="dotsRow"></div>
         <p class="cycle-info" id="cycleInfo">Session 1 of 4 · 0 done today</p>
       </div>
@@ -342,7 +346,7 @@
         <div class="drag-grip" title="Drag to reorder"><span class="drag-grip-icon">&#8942;&#8942;</span><span class="drag-grip-label">GHOSTS</span></div>
         <div class="ghost-drawer-hdr" onclick="toggleGhostDrawer()">
           <span class="ghost-drawer-hdr-icon">&#128123;</span>
-          <span class="ghost-drawer-hdr-label">Abandoned Tasks</span>
+          <span class="ghost-drawer-hdr-label">Earlier unfinished</span>
           <span class="ghost-drawer-count-badge" id="ghostDrawerCount">0</span>
           <span class="ghost-drawer-chevron" id="ghostDrawerChevron">&#9654;</span>
         </div>
@@ -436,10 +440,10 @@
             <span class="cmd-prompt">›_</span>
             <input class="cmd-input" id="entryInput" type="text"
               placeholder="What are you working on? #tags supported" autocomplete="off" />
-            <input class="entry-date-pick" id="entryDate" type="date" title="Choose date" />
+            <input class="entry-date-pick" id="entryDate" type="date" title="Choose date" aria-label="Task date" />
             <button class="cmd-add-btn" id="addBtn">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              LOG
+              Add task
             </button>
           </div>
 
@@ -468,7 +472,7 @@
             <div class="cmd-meta-divider"></div>
             <button class="cmd-toggle-btn" id="toggleDesc" data-active="false">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-              Notes
+              Details (optional)
             </button>
             <button class="cmd-toggle-btn" id="toggleNewSt" data-active="false">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
@@ -478,7 +482,7 @@
 
           <!-- ── Notes panel ── -->
           <div class="cmd-panel" id="descRow" style="display:none">
-            <div class="cmd-panel-label">// NOTES</div>
+            <div class="cmd-panel-label">DETAILS (OPTIONAL)</div>
             <textarea class="cmd-textarea" id="descInput" placeholder="Add context, links, or notes…" rows="2"></textarea>
           </div>
 
@@ -495,7 +499,12 @@
         </div>
 
         <div id="ghostBanner" class="ghost-banner" style="display:none"></div>
-
+        <div class="task-scope" role="group" aria-label="Task view">
+          <button class="outline-btn active" data-task-scope="daily" onclick="setTaskScope('daily')">Day</button>
+          <button class="outline-btn" data-task-scope="unfinished" onclick="setTaskScope('unfinished')">Unfinished · all dates</button>
+          <button class="outline-btn" data-task-scope="archived" onclick="setTaskScope('archived')">Archived</button>
+        </div>
+        <div id="carrySummary" class="carry-summary" role="status" hidden></div>
         <div id="log"></div>
       </section>
 
@@ -632,8 +641,10 @@
           <div class="data-actions">
             <button class="outline-btn" id="exportJsonBtn">⬇ JSON</button>
             <button class="outline-btn" id="exportCsvBtn">⬇ CSV</button>
+            <button class="outline-btn" id="exportBackupMdBtn">⬇ Markdown</button>
+            <button class="outline-btn" id="exportBackupXlsxBtn">⬇ Excel</button>
             <button class="outline-btn" id="importBtn">⬆ Import</button>
-            <input type="file" id="importFile" accept=".json" style="display:none" />
+            <input type="file" id="importFile" accept=".json,.csv,.md,.xlsx" style="display:none" />
           </div>
         </div>
       </section>
@@ -682,14 +693,14 @@
             </div>
             <div class="setting-toggle">
               <span>Auto-carry incomplete tasks
-                <span class="setting-hint">Tasks flagged ↺ roll to the next day automatically. You'll be asked for time spent each morning.</span>
+                <span class="setting-hint">Tasks flagged ↺ carry to today when overdue. A summary appears in the log; progress and history are kept.</span>
               </span>
               <label class="toggle-label"><input type="checkbox" id="s-autoRollover" /><span class="toggle-slider"></span></label>
             </div>
             <div class="setting-toggle">
               <label for="s-ghostDisplay">
-                Ghost task display
-                <span class="setting-hint">Where to show abandoned past tasks (done=false, not rolled).</span>
+                Earlier unfinished reminders
+                <span class="setting-hint">Where to show earlier tasks that are unfinished and have not been carried forward.</span>
               </label>
               <select id="s-ghostDisplay" class="setting-sel">
                 <option value="both">Banner + Drawer</option>
@@ -954,6 +965,9 @@
 <div id="warmOverlay" class="warm-overlay"></div>
 
 
+<script src="shared/sync-core.js"></script>
+<script src="sync-client.js"></script>
+<script src="web-workflows.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

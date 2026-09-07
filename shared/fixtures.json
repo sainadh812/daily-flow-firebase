@@ -1,0 +1,878 @@
+{
+  "schemaVersion": 3,
+  "cases": [
+    {
+      "name": "independent task fields",
+      "base": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "a",
+              "content": "Original",
+              "done": false,
+              "rolledTo": null,
+              "subtasks": [],
+              "comments": [],
+              "notes": "Remote note"
+            }
+          ]
+        }
+      },
+      "ops": [
+        {
+          "type": "patch",
+          "target": {
+            "kind": "task",
+            "date": "2026-09-07",
+            "id": "a"
+          },
+          "changes": {
+            "content": {
+              "before": {
+                "exists": true,
+                "value": "Original"
+              },
+              "after": {
+                "exists": true,
+                "value": "Local title"
+              }
+            }
+          },
+          "guard": {
+            "done": {
+              "exists": true,
+              "value": false
+            },
+            "archived": {
+              "exists": false
+            },
+            "rolledTo": {
+              "exists": true,
+              "value": null
+            }
+          }
+        }
+      ],
+      "expected": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "a",
+              "content": "Local title",
+              "done": false,
+              "rolledTo": null,
+              "subtasks": [],
+              "comments": [],
+              "notes": "Remote note"
+            }
+          ]
+        }
+      },
+      "conflictCodes": []
+    },
+    {
+      "name": "null is not missing",
+      "base": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "a",
+              "content": "Original",
+              "done": false,
+              "rolledTo": null,
+              "subtasks": [],
+              "comments": [],
+              "notes": null
+            }
+          ]
+        }
+      },
+      "ops": [
+        {
+          "type": "patch",
+          "target": {
+            "kind": "task",
+            "date": "2026-09-07",
+            "id": "a"
+          },
+          "changes": {
+            "notes": {
+              "before": {
+                "exists": false
+              },
+              "after": {
+                "exists": true,
+                "value": "Local"
+              }
+            }
+          },
+          "guard": {
+            "done": {
+              "exists": true,
+              "value": false
+            },
+            "archived": {
+              "exists": false
+            },
+            "rolledTo": {
+              "exists": true,
+              "value": null
+            }
+          }
+        }
+      ],
+      "expected": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "a",
+              "content": "Original",
+              "done": false,
+              "rolledTo": null,
+              "subtasks": [],
+              "comments": [],
+              "notes": null
+            }
+          ]
+        }
+      },
+      "conflictCodes": [
+        "field"
+      ]
+    },
+    {
+      "name": "deleted record cannot return",
+      "base": {
+        "entries": {
+          "2026-09-07": []
+        },
+        "tombstones": {
+          "[\"task\",\"2026-09-07\",\"\",\"a\"]": true
+        }
+      },
+      "ops": [
+        {
+          "type": "record",
+          "target": {
+            "kind": "task",
+            "date": "2026-09-07",
+            "id": "a"
+          },
+          "before": {
+            "exists": false
+          },
+          "after": {
+            "exists": true,
+            "value": {
+              "id": "a",
+              "content": "Original",
+              "done": false,
+              "rolledTo": null,
+              "subtasks": [],
+              "comments": []
+            }
+          }
+        }
+      ],
+      "expected": {
+        "entries": {
+          "2026-09-07": []
+        },
+        "tombstones": {
+          "[\"task\",\"2026-09-07\",\"\",\"a\"]": true
+        }
+      },
+      "conflictCodes": [
+        "deleted"
+      ]
+    },
+    {
+      "name": "atomic carry retains completed subtask",
+      "base": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "a",
+              "content": "Original",
+              "done": false,
+              "rolledTo": null,
+              "subtasks": [
+                {
+                  "id": "s1",
+                  "text": "Completed",
+                  "done": true
+                }
+              ],
+              "comments": [],
+              "pomodoros": 2,
+              "focusSeconds": 3000
+            }
+          ]
+        }
+      },
+      "ops": [
+        {
+          "type": "carry",
+          "source": {
+            "date": "2026-09-07",
+            "id": "a"
+          },
+          "targetDate": "2026-09-08",
+          "sourceBefore": {
+            "id": "a",
+            "content": "Original",
+            "done": false,
+            "rolledTo": null,
+            "subtasks": [
+              {
+                "id": "s1",
+                "text": "Completed",
+                "done": true
+              }
+            ],
+            "comments": []
+          },
+          "sourceAfter": {
+            "id": "a",
+            "content": "Original",
+            "done": false,
+            "rolledTo": "2026-09-08",
+            "subtasks": [
+              {
+                "id": "s1",
+                "text": "Completed",
+                "done": true
+              }
+            ],
+            "comments": []
+          },
+          "target": {
+            "id": "temporary",
+            "content": "Original",
+            "done": false,
+            "rolledTo": null,
+            "subtasks": [
+              {
+                "id": "s1",
+                "text": "Completed",
+                "done": false
+              }
+            ],
+            "comments": [],
+            "rolledFrom": "2026-09-07"
+          }
+        }
+      ],
+      "expected": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "a",
+              "content": "Original",
+              "done": false,
+              "rolledTo": "2026-09-08",
+              "subtasks": [
+                {
+                  "id": "s1",
+                  "text": "Completed",
+                  "done": true
+                }
+              ],
+              "comments": [],
+              "pomodoros": 2,
+              "focusSeconds": 3000
+            }
+          ],
+          "2026-09-08": [
+            {
+              "id": "carry:2026-09-07:a:2026-09-08",
+              "content": "Original",
+              "done": false,
+              "rolledTo": null,
+              "subtasks": [
+                {
+                  "id": "s1",
+                  "text": "Completed",
+                  "done": true
+                }
+              ],
+              "comments": [],
+              "rolledFrom": "2026-09-07",
+              "rolledFromTaskId": "a",
+              "pomodoros": 0,
+              "focusSeconds": 0
+            }
+          ]
+        }
+      },
+      "conflictCodes": []
+    },
+    {
+      "name": "immutable segment accounting",
+      "base": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "a",
+              "content": "Original",
+              "done": false,
+              "rolledTo": null,
+              "subtasks": [],
+              "comments": []
+            }
+          ]
+        }
+      },
+      "ops": [
+        {
+          "type": "segment",
+          "segment": {
+            "id": "seg1",
+            "sessionId": "session1",
+            "profileId": "p1",
+            "taskId": "a",
+            "taskDate": "2026-09-07",
+            "date": "2026-09-07",
+            "kind": "pomodoro",
+            "startedAt": 1000,
+            "endedAt": 61000,
+            "activeSeconds": 60,
+            "completedPomodoro": true,
+            "reason": "complete"
+          }
+        }
+      ],
+      "expected": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "a",
+              "content": "Original",
+              "done": false,
+              "rolledTo": null,
+              "subtasks": [],
+              "comments": [],
+              "pomodoros": 1,
+              "focusSeconds": 60
+            }
+          ]
+        },
+        "pomLog": {
+          "2026-09-07": 1
+        },
+        "focusLog": {
+          "2026-09-07": 60
+        }
+      },
+      "conflictCodes": []
+    },
+    {
+      "name": "metadata profile record",
+      "meta": true,
+      "base": {
+        "profiles": [
+          {
+            "id": "p1",
+            "name": "Old"
+          }
+        ],
+        "activeProfileId": "p1"
+      },
+      "ops": [
+        {
+          "type": "record",
+          "target": {
+            "kind": "profile",
+            "id": "p1"
+          },
+          "before": {
+            "exists": true,
+            "value": {
+              "id": "p1",
+              "name": "Old"
+            }
+          },
+          "after": {
+            "exists": true,
+            "value": {
+              "id": "p1",
+              "name": "New"
+            }
+          }
+        }
+      ],
+      "expected": {
+        "profiles": [
+          {
+            "id": "p1",
+            "name": "New"
+          }
+        ]
+      },
+      "conflictCodes": []
+    },
+    {
+      "name": "independent unlocks",
+      "base": {
+        "achievements": {
+          "unlocked": [
+            "first_pom"
+          ]
+        }
+      },
+      "ops": [
+        {
+          "type": "unlock",
+          "ids": [
+            "first_entry"
+          ]
+        }
+      ],
+      "expected": {
+        "achievements": {
+          "unlocked": [
+            "first_pom",
+            "first_entry"
+          ]
+        }
+      },
+      "conflictCodes": []
+    },
+    {
+      "name": "explicit task metrics restore",
+      "base": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "a",
+              "content": "Imported",
+              "pomodoros": 0,
+              "focusSeconds": 0
+            }
+          ]
+        }
+      },
+      "ops": [
+        {
+          "type": "import-metrics",
+          "before": {
+            "pomLog": {},
+            "focusLog": {}
+          },
+          "after": {
+            "pomLog": {
+              "2026-09-07": 3
+            },
+            "focusLog": {
+              "2026-09-07": 180
+            }
+          },
+          "taskMetrics": [
+            {
+              "date": "2026-09-07",
+              "id": "a",
+              "before": {
+                "pomodoros": {
+                  "exists": true,
+                  "value": 0
+                },
+                "focusSeconds": {
+                  "exists": true,
+                  "value": 0
+                }
+              },
+              "after": {
+                "pomodoros": {
+                  "exists": true,
+                  "value": 3
+                },
+                "focusSeconds": {
+                  "exists": true,
+                  "value": 180
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "a",
+              "content": "Imported",
+              "pomodoros": 3,
+              "focusSeconds": 180
+            }
+          ]
+        },
+        "pomLog": {
+          "2026-09-07": 3
+        },
+        "focusLog": {
+          "2026-09-07": 180
+        }
+      },
+      "conflictCodes": []
+    },
+    {
+      "name": "task metrics conflict is atomic",
+      "base": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "a",
+              "content": "Imported",
+              "pomodoros": 1,
+              "focusSeconds": 0
+            }
+          ]
+        }
+      },
+      "ops": [
+        {
+          "type": "import-metrics",
+          "before": {
+            "pomLog": {},
+            "focusLog": {}
+          },
+          "after": {
+            "pomLog": {
+              "2026-09-07": 3
+            },
+            "focusLog": {
+              "2026-09-07": 180
+            }
+          },
+          "taskMetrics": [
+            {
+              "date": "2026-09-07",
+              "id": "a",
+              "before": {
+                "pomodoros": {
+                  "exists": true,
+                  "value": 0
+                },
+                "focusSeconds": {
+                  "exists": true,
+                  "value": 0
+                }
+              },
+              "after": {
+                "pomodoros": {
+                  "exists": true,
+                  "value": 3
+                },
+                "focusSeconds": {
+                  "exists": true,
+                  "value": 180
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "a",
+              "content": "Imported",
+              "pomodoros": 1,
+              "focusSeconds": 0
+            }
+          ]
+        }
+      },
+      "conflictCodes": [
+        "metrics"
+      ]
+    },
+    {
+      "name": "deleted task metrics cannot return",
+      "base": {
+        "entries": {
+          "2026-09-07": []
+        }
+      },
+      "ops": [
+        {
+          "type": "import-metrics",
+          "before": {
+            "pomLog": {},
+            "focusLog": {}
+          },
+          "after": {
+            "pomLog": {
+              "2026-09-07": 3
+            },
+            "focusLog": {
+              "2026-09-07": 180
+            }
+          },
+          "taskMetrics": [
+            {
+              "date": "2026-09-07",
+              "id": "a",
+              "before": {
+                "pomodoros": {
+                  "exists": true,
+                  "value": 0
+                },
+                "focusSeconds": {
+                  "exists": true,
+                  "value": 0
+                }
+              },
+              "after": {
+                "pomodoros": {
+                  "exists": true,
+                  "value": 3
+                },
+                "focusSeconds": {
+                  "exists": true,
+                  "value": 180
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "entries": {
+          "2026-09-07": []
+        }
+      },
+      "conflictCodes": [
+        "deleted"
+      ]
+    },
+    {
+      "name": "compact deterministic carry id",
+      "base": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "content": "Long-lived task",
+              "done": false,
+              "rolledTo": null,
+              "subtasks": [],
+              "comments": []
+            }
+          ]
+        }
+      },
+      "ops": [
+        {
+          "type": "carry",
+          "source": {
+            "date": "2026-09-07",
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "targetDate": "2026-09-08",
+          "sourceBefore": {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "content": "Long-lived task",
+            "done": false,
+            "rolledTo": null,
+            "subtasks": [],
+            "comments": []
+          },
+          "sourceAfter": {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "content": "Long-lived task",
+            "done": false,
+            "rolledTo": "2026-09-08",
+            "subtasks": [],
+            "comments": []
+          },
+          "target": {
+            "id": "temporary",
+            "content": "Long-lived task",
+            "done": false,
+            "rolledTo": null,
+            "subtasks": [],
+            "comments": [],
+            "rolledFrom": "2026-09-07"
+          }
+        }
+      ],
+      "expected": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "content": "Long-lived task",
+              "done": false,
+              "rolledTo": "2026-09-08",
+              "subtasks": [],
+              "comments": []
+            }
+          ],
+          "2026-09-08": [
+            {
+              "id": "carry-h:2026-09-07:c2a908d98f5df987ade41b5fce213067efbcc21ef2240212a41e54b5e7c28ae5:2026-09-08",
+              "content": "Long-lived task",
+              "done": false,
+              "rolledTo": null,
+              "subtasks": [],
+              "comments": [],
+              "rolledFrom": "2026-09-07",
+              "rolledFromTaskId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "pomodoros": 0,
+              "focusSeconds": 0
+            }
+          ]
+        }
+      },
+      "conflictCodes": []
+    },
+    {
+      "name": "carry-conflicts-with-concurrent-legacy-dismissed-id",
+      "base": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "a",
+              "content": "Legacy hidden",
+              "done": false,
+              "rolledTo": null
+            }
+          ]
+        },
+        "settings": {
+          "ghostDismissed": [
+            "a",
+            "other"
+          ]
+        }
+      },
+      "ops": [
+        {
+          "type": "carry",
+          "source": {
+            "date": "2026-09-07",
+            "id": "a"
+          },
+          "targetDate": "2026-09-08",
+          "sourceBefore": {
+            "id": "a",
+            "content": "Legacy hidden",
+            "done": false,
+            "rolledTo": null
+          },
+          "sourceAfter": {
+            "id": "a",
+            "content": "Legacy hidden",
+            "done": false,
+            "rolledTo": "2026-09-08"
+          },
+          "target": {
+            "id": "temporary",
+            "content": "Legacy hidden",
+            "done": false,
+            "rolledTo": null,
+            "rolledFrom": "2026-09-07"
+          }
+        }
+      ],
+      "expected": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "a",
+              "content": "Legacy hidden",
+              "done": false,
+              "rolledTo": null
+            }
+          ]
+        },
+        "settings": {
+          "ghostDismissed": [
+            "a",
+            "other"
+          ]
+        }
+      },
+      "conflictCodes": [
+        "lifecycle"
+      ]
+    },
+    {
+      "name": "carry-conflicts-with-concurrent-legacy-dismissed-boolean",
+      "base": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "a",
+              "content": "Legacy hidden",
+              "done": false,
+              "rolledTo": null,
+              "ghostDismissed": true
+            }
+          ]
+        }
+      },
+      "ops": [
+        {
+          "type": "carry",
+          "source": {
+            "date": "2026-09-07",
+            "id": "a"
+          },
+          "targetDate": "2026-09-08",
+          "sourceBefore": {
+            "id": "a",
+            "content": "Legacy hidden",
+            "done": false,
+            "rolledTo": null
+          },
+          "sourceAfter": {
+            "id": "a",
+            "content": "Legacy hidden",
+            "done": false,
+            "rolledTo": "2026-09-08"
+          },
+          "target": {
+            "id": "temporary",
+            "content": "Legacy hidden",
+            "done": false,
+            "rolledTo": null,
+            "rolledFrom": "2026-09-07"
+          }
+        }
+      ],
+      "expected": {
+        "entries": {
+          "2026-09-07": [
+            {
+              "id": "a",
+              "content": "Legacy hidden",
+              "done": false,
+              "rolledTo": null,
+              "ghostDismissed": true
+            }
+          ]
+        }
+      },
+      "conflictCodes": [
+        "lifecycle"
+      ]
+    }
+  ],
+  "hashVectors": [
+    {
+      "source": "",
+      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "source": "abc",
+      "hash": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    },
+    {
+      "source": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "hash": "c2a908d98f5df987ade41b5fce213067efbcc21ef2240212a41e54b5e7c28ae5"
+    }
+  ]
+}

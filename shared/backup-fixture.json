@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 3,
+  "entries": {"2026-09-07": [{"id":"fixture-task","content":"Cross-device 🏍️ notes","notes":"A newline\nand a quote: \"hello\"","cat":"work","priority":"high","done":false,"archived":false,"autoRollover":true,"time":"09:30","tags":["sync"],"pomodoros":2,"focusSeconds":81,"subtasks":[{"id":"sub-1","text":"Already checked","done":true}],"comments":[{"id":"comment-1","text":"Preserve this comment"}]}]},
+  "settings":{"workDuration":20,"dark":true,"autoRollover":true},
+  "quickNotes":[{"id":"note-1","text":"A quick note"}],
+  "customCats":[{"id":"cat-1","label":"Personal project","emoji":"🌱","color":"#123ABC"}],
+  "achievements":{"unlocked":["first_entry","first_pom"]},
+  "pomLog":{"2026-09-07":2},
+  "focusLog":{"2026-09-07":81}
+}

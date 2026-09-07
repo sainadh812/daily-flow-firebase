@@ -1,39 +1,119 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-
-    // ── User owns their own data ───────────────────────────────
-    match /users/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
-
-      // Meta document: profiles list + activeProfileId
-      match /meta/{docId} {
-        allow read, write: if request.auth != null && request.auth.uid == uid;
+    // Prototype schema 3. Review before deployment. All data is owner-private.
+    // meta/root: profiles list; profiles/{pid}: legacy entries date map,
+    // pomLog/focusLog, settings, achievements, quickNotes/customCats, lastDate.
+    // Parents: schemaVersion, revision, updatedAt epoch-ms, tombstones, acks,
+    // lastMutation {deviceId,seq,segmentId:null|string}. Receipts: seq,updatedAt.
+    // Sessions: immutable fixed-shape segments, parent-profile scoped.
+    // Existing unknown parent fields must remain unchanged.
+    // Nested legacy arrays cannot be exhaustively traversed in Rules.
+    // See docs/security-review.md for the residual owner-data trust boundary.
+    function isAuthenticated() { return request.auth != null; }
+    function isOwner(uid) { return isAuthenticated() && request.auth.uid == uid; }
+    function uidUnchanged(data) { return !('uid' in data) || data.uid == request.auth.uid; }
+    function uidNotModified(data, old) { return data.get('uid', null) == old.get('uid', null); }
+    function id(value) { return value is string && value.size() > 0 && value.size() <= 240 && !value.matches('.*[/].*'); }
+    function epoch(value) { return value is number && value >= 0 && value <= request.time.toMillis() + 300000; }
+    function date(value) { return value is string && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
+    function allowed(data, old, fields) {
+      return (old.size() == 0 && data.keys().hasOnly(fields)) ||
+        (old.size() > 0 && data.diff(old).affectedKeys().hasOnly(fields));
+    }
+    function isValidEnvelope(data, old, parent) {
+      let m = data.lastMutation;
+      let previousAcks = old.get('acks', {});
+      let receipt = getAfter(/$(parent)/receipts/$(m.deviceId)).data;
+      return data.keys().hasAll(['schemaVersion','revision','updatedAt','tombstones','acks','lastMutation']) &&
+        data.schemaVersion == 3 && old.get('schemaVersion', 0) <= 3 &&
+        data.revision is int && data.revision == old.get('revision', 0) + 1 && epoch(data.updatedAt) &&
+        data.tombstones is map && data.tombstones.size() <= 10000 &&
+        data.acks is map && data.acks.size() <= 256 &&
+        m is map && m.keys().hasOnly(['deviceId','seq','segmentId']) &&
+        m.keys().hasAll(['deviceId','seq','segmentId']) && id(m.deviceId) &&
+        (m.segmentId == null || id(m.segmentId)) &&
+        m.seq is int && m.seq > 0 && m.seq == previousAcks.get(m.deviceId, 0) + 1 &&
+        data.acks.get(m.deviceId, 0) == m.seq &&
+        data.acks.diff(previousAcks).affectedKeys().hasOnly([m.deviceId]) &&
+        receipt.seq == m.seq && receipt.updatedAt == data.updatedAt &&
+        uidUnchanged(data) && uidNotModified(data, old);
+    }
+    function isValidProfileData(data, old) {
+      return allowed(data, old, ['entries','pomLog','focusLog','settings','achievements','quickNotes','customCats',
+          'lastDate','schemaVersion','revision','updatedAt','tombstones','acks','lastMutation']) &&
+        data.keys().hasAll(['entries','pomLog','focusLog','settings','achievements','quickNotes','customCats']) &&
+        data.entries is map && data.entries.size() <= 36600 &&
+        data.pomLog is map && data.pomLog.size() <= 36600 &&
+        data.focusLog is map && data.focusLog.size() <= 36600 &&
+        data.settings is map && data.settings.size() <= 100 &&
+        data.achievements is map && data.achievements.size() <= 10 &&
+        data.achievements.unlocked is list && data.achievements.unlocked.size() <= 100 &&
+        data.quickNotes is list && data.quickNotes.size() <= 1000 &&
+        data.customCats is list && data.customCats.size() <= 100 &&
+        (!('lastDate' in data) || date(data.lastDate));
+    }
+    function isValidMetaData(data, old) {
+      return allowed(data, old, ['profiles','schemaVersion','revision','updatedAt','tombstones','acks','lastMutation','activeProfile','activeProfileId']) &&
+        data.profiles is list && data.profiles.size() <= 100 &&
+        !('activeProfile' in data) && !('activeProfileId' in data) && data.lastMutation.segmentId == null;
+    }
+    function isValidReceipt(data, old, parent, device) {
+      let after = getAfter(parent).data;
+      return data.keys().hasAll(['seq','updatedAt']) && data.keys().hasOnly(['seq','updatedAt']) &&
+        data.seq is int && data.seq == old.get('seq', 0) + 1 && data.seq > 0 && epoch(data.updatedAt) &&
+        after.schemaVersion == 3 && after.lastMutation.deviceId == device && after.lastMutation.seq == data.seq &&
+        after.acks[device] == data.seq && after.updatedAt == data.updatedAt &&
+        after.revision == (exists(parent) ? get(parent).data.get('revision', 0) : 0) + 1;
+    }
+    function isValidSegment(data, segmentId, profileId, parent) {
+      let after = getAfter(parent).data;
+      return data.keys().hasOnly(['id','sessionId','profileId','taskId','taskDate','date','kind','startedAt','endedAt','activeSeconds','completedPomodoro','reason']) &&
+        data.keys().hasAll(['id','sessionId','profileId','taskId','taskDate','date','kind','startedAt','endedAt','activeSeconds','completedPomodoro','reason']) &&
+        id(data.id) && data.id == segmentId && id(data.sessionId) && data.profileId == profileId &&
+        ((data.taskId == null && data.taskDate == null) || (id(data.taskId) && date(data.taskDate))) &&
+        date(data.date) && data.kind in ['pomodoro','stopwatch'] &&
+        epoch(data.startedAt) && epoch(data.endedAt) && data.endedAt >= data.startedAt &&
+        data.activeSeconds is number && data.activeSeconds >= 0 && data.activeSeconds <= 86401 &&
+        data.activeSeconds <= (data.endedAt - data.startedAt) / 1000 + 1 &&
+        data.completedPomodoro is bool && (!data.completedPomodoro || data.kind == 'pomodoro') &&
+        data.reason is string && data.reason.size() > 0 && data.reason.size() <= 80 &&
+        after.schemaVersion == 3 && after.lastMutation.segmentId == segmentId &&
+        after.revision == (exists(parent) ? get(parent).data.get('revision', 0) : 0) + 1;
+    }
+    match /users/{uid}/meta/root {
+      allow read: if isOwner(uid);
+      allow create: if isOwner(uid) && isValidMetaData(request.resource.data, {}) &&
+        isValidEnvelope(request.resource.data, {}, /databases/$(database)/documents/users/$(uid)/meta/root);
+      allow update: if isOwner(uid) && isValidMetaData(request.resource.data, resource.data) &&
+        isValidEnvelope(request.resource.data, resource.data, /databases/$(database)/documents/users/$(uid)/meta/root);
+      allow delete: if false;
+      match /receipts/{device} {
+        allow read: if isOwner(uid);
+        allow create: if isOwner(uid) && id(device) && isValidReceipt(request.resource.data, {}, /databases/$(database)/documents/users/$(uid)/meta/root, device);
+        allow update: if isOwner(uid) && id(device) && isValidReceipt(request.resource.data, resource.data, /databases/$(database)/documents/users/$(uid)/meta/root, device);
+        allow delete: if false;
       }
-
-      // Per-profile data documents
-      match /profiles/{profileId} {
-        allow read:   if request.auth != null && request.auth.uid == uid;
-        allow create: if request.auth != null
-                      && request.auth.uid == uid
-                      && isValidProfileData(request.resource.data);
-        allow update: if request.auth != null
-                      && request.auth.uid == uid
-                      && isValidProfileData(request.resource.data);
-        allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+    match /users/{uid}/profiles/{pid} {
+      allow read: if isOwner(uid);
+      allow create: if isOwner(uid) && id(pid) && isValidProfileData(request.resource.data, {}) &&
+        isValidEnvelope(request.resource.data, {}, /databases/$(database)/documents/users/$(uid)/profiles/$(pid));
+      allow update: if isOwner(uid) && id(pid) && isValidProfileData(request.resource.data, resource.data) &&
+        isValidEnvelope(request.resource.data, resource.data, /databases/$(database)/documents/users/$(uid)/profiles/$(pid));
+      allow delete: if false;
+      match /receipts/{device} {
+        allow read: if isOwner(uid);
+        allow create: if isOwner(uid) && id(device) && isValidReceipt(request.resource.data, {}, /databases/$(database)/documents/users/$(uid)/profiles/$(pid), device);
+        allow update: if isOwner(uid) && id(device) && isValidReceipt(request.resource.data, resource.data, /databases/$(database)/documents/users/$(uid)/profiles/$(pid), device);
+        allow delete: if false;
+      }
+      match /sessions/{segmentId} {
+        allow read: if isOwner(uid) && exists(/databases/$(database)/documents/users/$(uid)/profiles/$(pid));
+        allow create: if isOwner(uid) && isValidSegment(request.resource.data, segmentId, pid, /databases/$(database)/documents/users/$(uid)/profiles/$(pid));
+        allow update, delete: if false;
       }
     }
-
-    // ── Deny everything else ──────────────────────────────────
-    match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // ── Validation function ───────────────────────────────────
-    function isValidProfileData(data) {
-      return data.keys().hasAny(['entries', 'pomLog', 'settings', 'achievements',
-                                  'quickNotes', 'customCats', 'lastDate', 'updatedAt'])
-             && (data.get('updatedAt', 0) is int || data.get('updatedAt', 0) is float);
-    }
+    match /{document=**} { allow read, write: if false; }
   }
 }

@@ -1,115 +1,349 @@
 'use strict';
 
-/* ═══════════════════════════════════════════════════════
-   FIREBASE SYNC LAYER
-   - Sits on top of localStorage (app still works offline)
-   - save() writes localStorage first, then debounces to Firestore
-   - On login, Firestore data is fetched and written into localStorage
-     so the existing load() function picks it up unchanged
-   - Timer state is localStorage-only (written every second, too noisy)
-═══════════════════════════════════════════════════════ */
-
-let _currentUser    = null;   // Firebase user object
-let _syncTimer      = null;   // debounce handle
-let _clearAuthError = () => {}; // overwritten by _initFirebaseAuth
-const SYNC_DELAY_MS = 1500;   // wait 1.5s after last save() before pushing
-
-// Firestore document path for a user's profile data
-function _fsDocPath(uid, profileId) {
-  return `users/${uid}/profiles/${profileId}`;
+/* Identity-scoped local-first sync. No stale whole-profile writes. */
+let _currentUser = null;
+let _clearAuthError = () => {};
+let _outbox = null;
+let _transport = null;
+let _metaClient = null;
+const _profileClients = new Map();
+const _capturedProfiles = new Map();
+let _capturedMeta = null;
+let _applyingCloud = false;
+let _cloudGeneration = 0;
+let _pendingView = null;
+const _syncStatuses = new Map();
+function accountKey(suffix) { return 'df3:' + JSON.stringify([_currentUser?.uid ?? null,suffix]); }
+function profileKey(pid, suffix) { return accountKey(JSON.stringify(['profile',pid,suffix])); }
+function _fsDocPath(uid, pid) { return 'users/' + uid + '/profiles/' + pid; }
+function _fsMetaPath(uid) { return 'users/' + uid + '/meta/root'; }
+function _profileSnapshot() {
+  return DailyFlowSyncCore.normalizeProfile({
+    ...(_capturedProfiles.get(state.activeProfileId) || {}),
+    entries: state.notes.entries, pomLog: state.pomLog, focusLog: state.focusLog || {},
+    settings: state.settings, achievements: state.achievements, quickNotes: state.quickNotes,
+    customCats: state.customCats, lastDate: todayStr()
+  });
 }
-function _fsMetaPath(uid) {
-  return `users/${uid}/meta/root`;
+function _storeProfile(pid, data) {
+  localStorage.setItem(profileKey(pid, 'document'), JSON.stringify(data));
+  const mapping = { entries:'entries', pomLog:'pomlog', focusLog:'focusLog', settings:'settings',
+    achievements:'achievements', quickNotes:'quicknotes', customCats:'customcats' };
+  for (const [field, key] of Object.entries(mapping))
+    localStorage.setItem(profileKey(pid, key), JSON.stringify(data[field]));
 }
-
-// Push current in-memory state to Firestore for the active profile
-async function _pushToFirestore() {
-  if (!_currentUser) return;
-  const db  = window._df_db;
-  const doc = window._df_doc;
-  const set = window._df_setDoc;
-  if (!db || !doc || !set) return;
-
+function _editingTask() {
+  const node = document.activeElement;
+  return !!(node && /^(INPUT|TEXTAREA|SELECT)$/.test(node.tagName) &&
+    (node.closest('#log') || node.closest('.modal-overlay.open') || node.closest('.profile-drop') ||
+      node.closest('#v-settings') || node.closest('#qcPopup') || node.closest('.qnote')));
+}
+function _applyProfileAppearance() {
+  const s=state.settings;
+  document.documentElement.setAttribute('data-theme',s.dark?'dark':'light');
+  applyAccentColor(s.accentColor || '#7C3AED');
+  document.documentElement.style.fontSize=(s.fontSize || 16)+'px';
+  applyRingStyle(s.ringStyle || 'solid');
+  applyWarmLight(s.warmLight || 0);
+  const slider=document.getElementById('warmSlider');if(slider)slider.value=s.warmLight || 0;
+  applyFocusMode();updateClocks();populateCatSelects();
+  if(!state.timer.running && !state.timer.resumePending && !state.timer.sessionId && state.timer.remainingMs===state.timer.durationMs){
+    state.timer.timeLeft=getModeSecs(state.timer.mode);
+    state.timer.durationMs=state.timer.remainingMs=state.timer.timeLeft*1000;
+    renderTimeDisplay();renderRing();
+  }
+  if(state.ui.view==='settings' && !_editingTask()){loadSettingsUI();renderCategoryManager();}
+}
+function _clearProfileWorkspace() {
+  clearInterval(state.timer.iv);
+  state.activeProfileId=null;
+  state.notes.entries={};state.pomLog={};state.focusLog={};state.quickNotes=[];state.customCats=[];
+  state.achievements={unlocked:[]};state.settings={...DEFAULT_SETTINGS};
+  _pendingView=null;_timerShouldResume=false;restoreTimerSnapshot({});
+  _clearRenderedProfileEditors();
+  for(const id of ['entryInput','descInput','qcTextarea']){const el=document.getElementById(id);if(el)el.value='';}
+  _newSubtasks=[];_renderNewStList();
+  const capture=document.getElementById('qcPopup');if(capture)capture.style.display='none';
+}
+function _clearRenderedProfileEditors() {
+  // A previous account/profile's DOM must not be captured as the next one's draft.
+  document.getElementById('log')?.replaceChildren();
+  _editId=null;
+  for(const id of ['commentFormId','rollFormId','subtaskFormId','timeSpentId'])state.ui[id]=null;
+}
+function _renderWorkspaceAvailability() {
+  const main=document.querySelector('main.main');if(!main)return;
+  let empty=document.getElementById('emptyWorkspace');
+  if(!empty){
+    empty=document.createElement('section');empty.id='emptyWorkspace';empty.className='empty';
+    empty.style.cssText='margin:32px auto;padding:32px;max-width:560px;text-align:center';
+    const title=document.createElement('h2');title.textContent='No profiles yet';
+    const text=document.createElement('p');text.textContent='Create a profile to begin. Previously removed profile data is retained for recovery.';
+    text.style.margin='16px 0';
+    const button=document.createElement('button');button.className='primary-btn';button.textContent='Create profile';button.onclick=openCreateProfile;
+    empty.append(title,text,button);main.before(empty);
+  }
+  const available=!!state.activeProfileId;
+  empty.hidden=available;main.style.display=available?'':'none';main.inert=!available;
+  const fab=document.getElementById('fabBtn');if(fab)fab.style.display=available?'':'none';
+}
+function _renderLoadedProfile() {
+  _applyProfileAppearance();
+  renderProfileSelector();renderDateHeader();renderLog();renderStats();renderCalendar();renderQuickNotes();
+  renderTimerAll();updateSessionBanner();_renderWorkspaceAvailability();
+  if(_timerShouldResume && state.activeProfileId){_timerShouldResume=false;startTimer();}
+}
+function _showMetaData(data) {
+  _capturedMeta=DailyFlowSyncCore.normalizeMeta(data);
+  localStorage.setItem(accountKey('profiles'),JSON.stringify(data.profiles));
+  if(!window._df_appReady)return;
+  state.profiles=data.profiles;
+  const ids=new Set(data.profiles.map(p=>p.id));
+  if(!ids.has(state.activeProfileId)) {
+    if(state.activeProfileId){
+      // Finish under the old profile while the new metadata already excludes it.
+      if(state.timer.running || state.timer.resumePending)stopTimer('profile-removed');
+      save();
+    }
+    _pendingView=null;_clearRenderedProfileEditors();
+    if(data.profiles.length){state.activeProfileId=data.profiles[0].id;loadProfileData(state.activeProfileId);}
+    else _clearProfileWorkspace();
+    if(state.activeProfileId)localStorage.setItem(accountKey('activeProfile'),state.activeProfileId);
+    else localStorage.removeItem(accountKey('activeProfile'));
+    _renderLoadedProfile();
+  } else renderProfileSelector();
+  for(const [pid,client] of _profileClients)if(!ids.has(pid)){
+    client.stop();_profileClients.delete(pid);_capturedProfiles.delete(pid);
+    _syncStatuses.delete(client.path);
+  }
+  for(const p of data.profiles)_ensureProfileClient(p.id).catch(error=>_syncStatus('storage',{label:'Needs attention',error:error.message}));
+}
+function _showProfileData(pid, data) {
+  _storeProfile(pid, data);
+  if (!window._df_appReady || state.activeProfileId !== pid) return;
+  if (_editingTask()) { _pendingView = { pid, data }; return; }
+  _applyingCloud = true;
+  try {
+    state.notes.entries = data.entries;
+    state.pomLog = data.pomLog; state.focusLog = data.focusLog || {};
+    state.settings = { ...DEFAULT_SETTINGS, ...data.settings };
+    state.achievements = data.achievements;
+    state.quickNotes = data.quickNotes; state.customCats = data.customCats;
+    _capturedProfiles.set(pid, DailyFlowSyncCore.normalizeProfile(data));
+    _applyProfileAppearance();
+    renderLog(); renderStats(); renderCalendar(); renderQuickNotes();
+    if (state.ui.view === 'analytics') renderAnalytics();
+  } finally { _applyingCloud = false; }
+}
+function _syncStatus(scope, status) {
+  _syncStatuses.set(scope, status);
+  const values = [..._syncStatuses.values()];
+  const label = values.some(s => s.label === 'Needs attention') ? 'Needs attention'
+    : values.some(s => s.label === 'Syncing') ? 'Syncing'
+    : values.some(s => s.label === 'Saved locally') ? 'Saved locally' : 'Synced';
+  const el = document.getElementById('syncStatus');
+  if (el) { el.textContent = label; el.dataset.status = label; el.title = values.map(s=>s.error).filter(Boolean).join('\n') || label; }
+}
+function _stopCloudClients() {
+  _cloudGeneration++;
+  _metaClient?.stop(); _metaClient = null;
+  _profileClients.forEach(c => c.stop()); _profileClients.clear();
+  _capturedProfiles.clear(); _capturedMeta = null; _syncStatuses.clear(); _pendingView = null;
+}
+function _journal(operations, client, stableId) {
+  if (!client || !operations.length) return Promise.resolve();
+  const key = accountKey('intentJournal');
+  const entries = JSON.parse(localStorage.getItem(key) || '[]');
+  const intent = { id: stableId || crypto.randomUUID(), path: client.path, operations };
+  if (!entries.some(x => x.id === intent.id)) entries.push(intent);
+  localStorage.setItem(key, JSON.stringify(entries)); // durable before asynchronous IDB work
+  return client.enqueue(operations, intent.id).then(() => {
+    const remaining = JSON.parse(localStorage.getItem(key) || '[]').filter(x => x.id !== intent.id);
+    localStorage.setItem(key, JSON.stringify(remaining));
+  }).catch(error => _syncStatus(client.path, { label:'Needs attention', error:error.message }));
+}
+async function _restoreJournal() {
+  const uid=_currentUser?.uid,generation=_cloudGeneration;
+  const key = accountKey('intentJournal');
+  const intents = JSON.parse(localStorage.getItem(key) || '[]');
+  for (const intent of intents) {
+    if(uid!==_currentUser?.uid || generation!==_cloudGeneration)return;
+    const client = intent.path === _metaClient?.path ? _metaClient
+      : [..._profileClients.values()].find(c => c.path === intent.path);
+    if (!client) continue;
+    await client.enqueue(intent.operations, intent.id);
+    if(uid!==_currentUser?.uid || generation!==_cloudGeneration)return;
+    localStorage.setItem(key, JSON.stringify(JSON.parse(localStorage.getItem(key) || '[]').filter(x=>x.id!==intent.id)));
+  }
+}
+async function _ensureProfileClient(pid) {
+  if(!_currentUser)return null;
+  if (_profileClients.has(pid)) return _profileClients.get(pid);
+  const generation = _cloudGeneration;
   const uid = _currentUser.uid;
-  const pid = state.activeProfileId;
-  if (!pid) return;
-
-  // Set sync indicator to "syncing"
-  const dot = document.getElementById('syncDot');
-  if (dot) { dot.classList.add('syncing'); dot.classList.remove('error'); }
-
-  try {
-    // 1. Save profile data document
-    const profileData = {
-      entries:      state.notes.entries,
-      pomLog:       state.pomLog,
-      settings:     state.settings,
-      achievements: state.achievements,
-      quickNotes:   state.quickNotes,
-      customCats:   state.customCats,
-      lastDate:     todayStr(),
-      updatedAt:    Date.now(),
-    };
-    await set(doc(db, _fsDocPath(uid, pid)), profileData);
-
-    // 2. Save profiles list + active profile to meta doc
-    const metaData = {
-      profiles:        state.profiles,
-      activeProfileId: state.activeProfileId,
-      updatedAt:       Date.now(),
-    };
-    await set(doc(db, _fsMetaPath(uid)), metaData);
-
-    if (dot) { dot.classList.remove('syncing', 'error'); }
-  } catch (err) {
-    console.error('[DailyFlow] Firestore sync error:', err);
-    if (dot) { dot.classList.remove('syncing'); dot.classList.add('error'); dot.title = 'Sync failed'; }
+  const client = new DailyFlowSync.Client({
+    uid:_currentUser.uid, profileId:pid, outbox:_outbox, transport:_transport,
+    onStatus:status => { if (generation === _cloudGeneration) _syncStatus(_fsDocPath(uid, pid), status); },
+    onData:data => { if (generation === _cloudGeneration) _showProfileData(pid, data); }
+  });
+  _profileClients.set(pid, client);
+  _recoverTimeCheckpoint(pid);
+  await client.start();
+  if(generation!==_cloudGeneration || uid!==_currentUser?.uid){
+    client.stop();if(_profileClients.get(pid)===client)_profileClients.delete(pid);return null;
   }
+  return client;
 }
-
-// Debounced wrapper — called by save() after localStorage write
 function _scheduleSyncToFirestore() {
-  clearTimeout(_syncTimer);
-  _syncTimer = setTimeout(_pushToFirestore, SYNC_DELAY_MS);
-}
-
-// Pull ALL profiles from Firestore and write into localStorage so load() works as-is
-async function _pullFromFirestore(uid) {
-  const db  = window._df_db;
-  const doc = window._df_doc;
-  const get = window._df_getDoc;
-  if (!db || !doc || !get) return;
-
-  try {
-    // 1. Load meta (profiles list)
-    const metaSnap = await get(doc(db, _fsMetaPath(uid)));
-    if (!metaSnap.exists()) return; // first-ever login — no cloud data yet
-
-    const meta = metaSnap.data();
-    if (meta.profiles && meta.profiles.length) {
-      localStorage.setItem('df2_profiles',      JSON.stringify(meta.profiles));
-      localStorage.setItem('df2_activeProfile', meta.activeProfileId || meta.profiles[0].id);
-    }
-
-    // 2. Load each profile's data
-    const profiles = meta.profiles || [];
-    for (const p of profiles) {
-      const snap = await get(doc(db, _fsDocPath(uid, p.id)));
-      if (!snap.exists()) continue;
-      const d = snap.data();
-      const pk = (k) => `df2_p${p.id}_${k}`;
-      if (d.entries)      localStorage.setItem(pk('entries'),      JSON.stringify(d.entries));
-      if (d.pomLog)       localStorage.setItem(pk('pomlog'),        JSON.stringify(d.pomLog));
-      if (d.settings)     localStorage.setItem(pk('settings'),      JSON.stringify(d.settings));
-      if (d.achievements) localStorage.setItem(pk('achievements'),  JSON.stringify(d.achievements));
-      if (d.quickNotes)   localStorage.setItem(pk('quicknotes'),    JSON.stringify(d.quickNotes));
-      if (d.customCats)   localStorage.setItem(pk('customcats'),    JSON.stringify(d.customCats));
-      if (d.lastDate)     localStorage.setItem(pk('lastDate'),      d.lastDate);
-    }
-  } catch (err) {
-    console.error('[DailyFlow] Firestore pull error:', err);
+  if (!_currentUser || !_metaClient || _applyingCloud) return;
+  const meta = DailyFlowSyncCore.normalizeMeta({ profiles:state.profiles });
+  if (_capturedMeta) _journal(DailyFlowSyncCore.diffMeta(_capturedMeta, meta), _metaClient);
+  _capturedMeta = meta;
+  const pid = state.activeProfileId;
+  if(!pid)return;
+  const after = _profileSnapshot();
+  const before = _capturedProfiles.get(pid);
+  _capturedProfiles.set(pid, after);
+  const client = _profileClients.get(pid);
+  if (client && before) _journal(DailyFlowSyncCore.diffProfile(before, after), client);
+  else if (!client) {
+    // New profiles have no server data. Existing profiles are always loaded on sign-in.
+    _ensureProfileClient(pid).catch(error => _syncStatus('storage',{label:'Needs attention',error:error.message}));
+    _journal(DailyFlowSyncCore.diffProfile(DailyFlowSyncCore.normalizeProfile({}), after), _profileClients.get(pid));
   }
 }
+async function _pushToFirestore() {
+  await Promise.all([_metaClient, ..._profileClients.values()].filter(Boolean).map(c=>c.flush()));
+}
+async function _pullFromFirestore(uid) {
+  const generation=_cloudGeneration;
+  const current=()=>generation===_cloudGeneration && uid===_currentUser?.uid;
+  if(!current())return;
+  const outbox=_outbox || await DailyFlowSync.Outbox.open();
+  if(!current())return;
+  _outbox=outbox;
+  _transport = DailyFlowSync.firebaseTransport({
+    db:window._df_db, doc:window._df_doc, onSnapshot:window._df_onSnapshot,
+    runTransaction:window._df_runTransaction
+  });
+  // Load the existing account before rendering; never import unscoped browser data.
+  let meta;
+  try {
+    const snap = await window._df_getDoc(window._df_doc(window._df_db, _fsMetaPath(uid)));
+    if(!current())return;
+    meta = DailyFlowSyncCore.normalizeMeta(snap.exists() ? snap.data() : {});
+    meta = await _outbox.acceptBaseline(_fsMetaPath(uid), meta);
+    if(!current())return;
+  } catch (error) {
+    if(!current())return;
+    if (error.code === 'schema' || error.code === 'permission-denied') throw error;
+    meta = DailyFlowSyncCore.normalizeMeta(await _outbox.read('baseline:' + _fsMetaPath(uid)) || {});
+    if(!current())return;
+    _syncStatus('connection', {label:'Saved locally',error:error.message});
+  }
+  if (!current()) return;
+  for (const p of meta.profiles || []) {
+    if (!current()) return;
+    try {
+      const snap = await window._df_getDoc(window._df_doc(window._df_db, _fsDocPath(uid,p.id)));
+      if(!current())return;
+      const data = DailyFlowSyncCore.normalizeProfile(snap.exists() ? snap.data() : {});
+      await _outbox.acceptBaseline(_fsDocPath(uid,p.id), data);
+      if(!current())return;
+    } catch (error) { if(!current())return;if (error.code === 'schema' || error.code === 'permission-denied') throw error; }
+    if (!current()) return;
+    await _ensureProfileClient(p.id);
+    if(!current())return;
+  }
+  if (!current()) return;
+  localStorage.setItem(accountKey('profiles'), JSON.stringify(meta.profiles));
+  _capturedMeta = meta;
+  _metaClient = new DailyFlowSync.Client({
+    uid, meta:true, outbox:_outbox, transport:_transport,
+    onStatus:s => {if(current())_syncStatus('meta',s);},
+    onData:data => {
+      if (!current()) return;
+      _showMetaData(data);
+    }
+  });
+  await _metaClient.start();
+  if(!current())return;
+  await _restoreJournal();
+}
+function _recoverTimeCheckpoint(pid) {
+  const checkpointKey = profileKey(pid, 'segmentCheckpoint');
+  const raw = localStorage.getItem(checkpointKey);
+  if (!raw) return;
+  const checkpoint = JSON.parse(raw);
+  const client = _profileClients.get(pid);
+  // The same journal ID survives crashes on either side of the IDB hand-off.
+  if (client) _journal([{type:'segment',segment:checkpoint.segment}], client, 'segment:' + checkpoint.segment.id);
+  _storeProfile(pid, checkpoint.next);
+  const key = profileKey(pid, 'segments');
+  const records = JSON.parse(localStorage.getItem(key) || '{}');
+  records[checkpoint.segment.id] = checkpoint.segment;
+  localStorage.setItem(key, JSON.stringify(records));
+  localStorage.removeItem(checkpointKey);
+}
+function recordTimeSegment(segment) {
+  const pid = segment.profileId || state.activeProfileId;
+  if (pid !== state.activeProfileId) throw new Error('Timer belongs to another profile');
+  const key = profileKey(pid, 'segments');
+  const records = JSON.parse(localStorage.getItem(key) || '{}');
+  if (records[segment.id]) return;
+  const next = DailyFlowSyncCore.applySegment(_profileSnapshot(), segment);
+  // One atomic checkpoint precedes all multi-key cache updates and dedupe marks.
+  localStorage.setItem(profileKey(pid, 'segmentCheckpoint'), JSON.stringify({segment,next}));
+  _recoverTimeCheckpoint(pid);
+  state.notes.entries = next.entries; state.pomLog = next.pomLog; state.focusLog = next.focusLog;
+  save();
+}
+function openSyncStatus() {
+  const clients = [_metaClient, ..._profileClients.values()].filter(Boolean);
+  const conflictClient = clients.find(c=>c.conflict);
+  const old = document.getElementById('syncReview');
+  if (old) old.remove();
+  const dialog = document.createElement('dialog');
+  dialog.id = 'syncReview'; dialog.style.cssText='padding:24px;max-width:640px;width:calc(100% - 32px);margin:auto;border:1px solid var(--border);border-radius:14px;background:var(--surface);color:var(--text)';
+  const title = document.createElement('h2'); title.textContent = conflictClient ? 'Review conflicting changes' : 'Synchronization';
+  dialog.append(title);
+  const message = document.createElement('p');
+  message.textContent = conflictClient ? conflictClient.conflict.message : (!_currentUser
+    ? 'Local preview: no cloud account is connected. Your data stays on this browser.'
+    : [..._syncStatuses.values()].map(s=>s.label + (s.error ? ': '+s.error : '')).join('\n'));
+  message.style.cssText='white-space:pre-wrap;margin:16px 0'; dialog.append(message);
+  if (conflictClient) {
+    const details = document.createElement('pre');
+    const pendingOperation = conflictClient.conflict.row.operation;
+    details.textContent = JSON.stringify({pendingChange:pendingOperation,serverConflict:conflictClient.conflict.details}, null, 2);
+    details.style.cssText='white-space:pre-wrap;max-height:40vh;overflow:auto;font-size:.8rem'; dialog.append(details);
+    const keep = document.createElement('button'); keep.className='primary-btn'; keep.textContent='Keep cloud version of this change';
+    keep.onclick=async()=>{ await conflictClient.keepServerVersion(); dialog.close(); }; dialog.append(keep);
+    const reviewed = DailyFlowSync.reviewedPatch(conflictClient.base, pendingOperation);
+    if (reviewed) {
+      const local=document.createElement('button'); local.className='outline-btn'; local.textContent='Use my edited fields';
+      local.onclick=async()=>{
+        if (!confirm('Apply your edited fields to the reviewed cloud version? Other fields stay unchanged. A newer remote edit will be reviewed again.')) return;
+        await conflictClient.retryWithOperation(reviewed); dialog.close();
+      }; dialog.append(local);
+    }
+    const recovery=document.createElement('button'); recovery.className='outline-btn'; recovery.textContent='Download this pending change';
+    recovery.onclick=()=>{
+      const url=URL.createObjectURL(new Blob([JSON.stringify(pendingOperation,null,2)],{type:'application/json'}));
+      const link=document.createElement('a');link.href=url;link.download='dailyflow-pending-change.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    };dialog.append(recovery);
+    const help=document.createElement('p'); help.textContent='Deleted or carried records are not resurrected automatically. Download the pending change to recover its content. Other queued changes are retained.'; dialog.append(help);
+  }
+  const retry=document.createElement('button'); retry.textContent='Retry sync'; retry.className='outline-btn'; retry.onclick=()=>_pushToFirestore(); dialog.append(retry);
+  const close=document.createElement('button'); close.textContent='Close'; close.className='outline-btn'; close.onclick=()=>dialog.close(); dialog.append(close);
+  document.body.append(dialog); dialog.showModal();
+}
+document.addEventListener('focusout', () => setTimeout(() => {
+  if (_pendingView && !_editingTask()) {
+    const pending = _pendingView; _pendingView = null;
+    _showProfileData(pending.pid, _profileClients.get(pending.pid)?.view || pending.data);
+  }
+}, 150));
 
 // Show / hide the login screen
 function _showLoginScreen(visible) {
@@ -140,6 +374,15 @@ function _updateUserBadge(user) {
 
 // Bootstrap Firebase auth — called once the DOM is ready
 function _initFirebaseAuth() {
+  if (!window._df_firebaseReady) {
+    window.addEventListener('dailyflow-firebase-ready', _initFirebaseAuth, { once:true });
+    return;
+  }
+  if (window._df_firebaseError) {
+    _showLoginScreen(true);
+    document.getElementById('loginError').textContent = window._df_firebaseError;
+    return;
+  }
 
   // ── Tab switching ──────────────────────────────────────
   document.querySelectorAll('.auth-tab').forEach(btn => {
@@ -370,6 +613,8 @@ function _initFirebaseAuth() {
 
   // ── Sign-out buttons ───────────────────────────────────
   async function doSignOut() {
+    if (state.timer.running) stopTimer('account');
+    save();
     document.getElementById('profileDrop')?.classList.remove('open');
     document.getElementById('userMenuDrop')?.classList.remove('open');
     await window._df_signOut();
@@ -390,7 +635,13 @@ function _initFirebaseAuth() {
   // ── Auth state listener ────────────────────────────────
   if (window._df_onAuthStateChanged) {
     window._df_onAuthStateChanged(async (user) => {
+      if (_currentUser?.uid !== user?.uid) {
+        if (state.timer.running || state.timer.resumePending) stopTimer('account');
+        _stopCloudClients();
+        if(window._df_appReady){state.profiles=[];_clearProfileWorkspace();_renderLoadedProfile();}
+      }
       _currentUser = user;
+      const authGeneration=_cloudGeneration;
       if (user) {
         // Show login screen with loading message while fetching data
         const loginScreen = document.getElementById('loginScreen');
@@ -398,17 +649,27 @@ function _initFirebaseAuth() {
           // Replace card content temporarily with loading state
           loginScreen.querySelector('h2').textContent = 'Loading your data…';
         }
-        await _pullFromFirestore(user.uid);
+        try { await _pullFromFirestore(user.uid); }
+        catch (error) {
+          if(_currentUser?.uid!==user.uid || authGeneration!==_cloudGeneration)return;
+          _showAuthError('Your data could not be loaded safely. ' + error.message);
+          _showLoginScreen(true);
+          return;
+        }
+        if (_currentUser?.uid !== user.uid || authGeneration!==_cloudGeneration) return;
         _showLoginScreen(false);
         _updateUserBadge(user);
 
         if (window._df_appReady) {
           load();
+          _renderLoadedProfile();
           renderProfileSelector();
           renderLog();
           renderStats();
           renderCalendar();
           renderQuickNotes();
+          renderTimerAll(); updateSessionBanner();
+          _scheduleSyncToFirestore();
           checkEod();
         }
       } else {
@@ -464,12 +725,14 @@ const CAT_COLOR_PRESETS = [
 ];
 
 const MODE_COLORS = {
+  stopwatch:  { stroke: '#7C3AED', modeClass: '' },
   work:       { stroke: '#7C3AED', modeClass: ''          },
   shortBreak: { stroke: '#059669', modeClass: 'mode-short' },
   longBreak:  { stroke: '#D97706', modeClass: 'mode-long'  },
 };
 
 const MODE_LABELS = {
+  stopwatch: 'Stopwatch',
   work: 'Focus Time', shortBreak: 'Short Break', longBreak: 'Long Break',
 };
 
@@ -515,6 +778,14 @@ const state = {
     cyclePos: 0,
     totalToday: 0,
     activeEntryId: null,
+    activeEntryDate: null,
+    durationMs: 25 * 60000,
+    remainingMs: 25 * 60000,
+    elapsedMs: 0,
+    deadlineAt: null,
+    sessionId: null,
+    segmentIndex: 0,
+    segmentStartedAt: null,
   },
   notes: {
     date: todayStr(),
@@ -557,6 +828,8 @@ const state = {
     rollFormId:     null,  // entry id showing roll-to-next-day form
     subtaskFormId:  null,  // entry id showing add-subtask input
     timeSpentId:    null,  // entry id showing time-spent prompt
+    taskScope:     'daily',
+    entryDateExplicit: false,
   },
   ambient: {
     type:   'none',
@@ -608,13 +881,15 @@ let _dragId              = null;
 let _editId              = null;
 let _toastTm             = null;
 let _timerShouldResume   = false; // set true on load if timer was running
+const _logDrafts = {};
+function _logDraftKey() { return profileKey(state.activeProfileId,'editorDrafts'); }
 
 /* ─────────────────────────────────────────────────────
    UTILITIES
 ───────────────────────────────────────────────────── */
 
 function todayStr() {
-  return new Date().toLocaleDateString('en-CA');
+  return DailyFlowWorkflows.dateKey(Date.now());
 }
 
 function fmtTime(secs) {
@@ -637,7 +912,7 @@ function fmtDate(str) {
 function offsetDate(base, delta) {
   const d = new Date(base + 'T00:00:00');
   d.setDate(d.getDate() + delta);
-  return d.toLocaleDateString('en-CA');
+  return DailyFlowWorkflows.dateKey(d);
 }
 
 function nowTime() {
@@ -672,7 +947,7 @@ function getGhostTasks() {
   Object.keys(state.notes.entries).sort().forEach(dateStr => {
     if (dateStr >= today) return;
     (state.notes.entries[dateStr] || []).forEach(e => {
-      if (!e.done && !e.rolledTo && !dismissed.has(e.id)) {
+      if (!e.done && !e.rolledTo && !e.archived && !dismissed.has(e.id)) {
         ghosts.push({ entry: e, date: dateStr });
       }
     });
@@ -681,57 +956,14 @@ function getGhostTasks() {
 }
 
 function dismissGhost(entryId) {
-  if (!state.settings.ghostDismissed) state.settings.ghostDismissed = [];
-  if (!state.settings.ghostDismissed.includes(entryId)) {
-    state.settings.ghostDismissed.push(entryId);
-  }
-  save();
-  renderGhostBanner();
-  renderGhostDrawer();
-  renderCalendar();
-  renderStats();
+  archiveEntry(entryId);
 }
 
 function rollGhostToday(entryId, sourceDate) {
-  const srcEntries = state.notes.entries[sourceDate] || [];
-  const entry = srcEntries.find(e => e.id === entryId);
-  if (!entry) return;
-  const today = todayStr();
-  const [sourceLbl] = fmtDate(sourceDate);
-  const systemCmt = {
-    id:     (Date.now() + 1).toString(),
-    text:   '\u21a9 Rolled from ' + sourceLbl + ' (via Ghost panel)',
-    time:   nowTime(),
-    ts:     Date.now() + 1,
-    system: true,
-  };
-  const newEntry = {
-    id:           Date.now().toString(),
-    content:      entry.content,
-    notes:        entry.notes || '',
-    cat:          entry.cat,
-    priority:     entry.priority,
-    tags:         [...(entry.tags || [])],
-    time:         nowTime(),
-    ts:           Date.now(),
-    done:         false,
-    pomodoros:    0,
-    subtasks:     (entry.subtasks || []).map(s => ({ ...s, done: false })),
-    rolledFrom:   sourceDate,
-    rolledTo:     null,
-    autoRollover: false,
-    comments:     [systemCmt, ...(entry.comments || [])],
-  };
-  if (!state.notes.entries[today]) state.notes.entries[today] = [];
-  state.notes.entries[today].unshift(newEntry);
-  entry.rolledTo = today;
-  save();
-  renderLog();
-  renderCalendar();
-  renderStats();
-  renderGhostBanner();
-  renderGhostDrawer();
-  showToast('\u2713 Ghost task rolled to Today');
+  const result = DailyFlowWorkflows.carry(state.notes.entries, sourceDate, entryId, todayStr(), Date.now());
+  if (!result) return;
+  save(); renderLog(); renderCalendar(); renderStats();
+  showToast('✓ Task carried to Today');
   checkAchievements();
 }
 
@@ -751,7 +983,7 @@ function renderGhostBanner() {
   if (!ghosts.length) { el.style.display = 'none'; return; }
   el.style.display = '';
   const isOpen = el.classList.contains('ghost-expanded');
-  const countLabel = ghosts.length === 1 ? '1 abandoned task' : ghosts.length + ' abandoned tasks';
+  const countLabel = ghosts.length === 1 ? '1 unfinished task' : ghosts.length + ' unfinished tasks';
 
   let tasksHtml = '';
   if (isOpen) {
@@ -781,7 +1013,7 @@ function renderGhostBanner() {
     + '<span class="ghost-banner-icon">&#128123;</span>'
     + '<div class="ghost-banner-title">'
     + '<strong>' + countLabel + ' from past days</strong>'
-    + '<span>Never completed &amp; never rolled forward</span>'
+    + '<span>Carry to today or archive for later</span>'
     + '</div>'
     + '<span class="ghost-banner-chevron">' + chevron + '</span>'
     + '</div>'
@@ -808,7 +1040,7 @@ function renderGhostDrawer() {
   const ghosts = getGhostTasks();
   if (hdr) hdr.textContent = ghosts.length;
   if (!ghosts.length) {
-    el.innerHTML = '<div class="ghost-drawer-empty">All clear \u2728 No abandoned tasks.</div>';
+    el.innerHTML = '<div class="ghost-drawer-empty">All clear \u2728 No earlier unfinished tasks.</div>';
     return;
   }
   el.innerHTML = ghosts.map(function(g) {
@@ -840,7 +1072,7 @@ function toggleGhostDrawer() {
 
 function getModeSecs(mode) {
   const s = state.settings;
-  return { work: s.workDuration*60, shortBreak: s.shortBreakDuration*60, longBreak: s.longBreakDuration*60 }[mode];
+  return { work: s.workDuration*60, shortBreak: s.shortBreakDuration*60, longBreak: s.longBreakDuration*60, stopwatch: 0 }[mode];
 }
 
 /* ─────────────────────────────────────────────────────
@@ -1078,7 +1310,11 @@ function renderProfileSelector() {
   if (!btn || !list) return;
 
   const active = state.profiles.find(p => p.id === state.activeProfileId);
-  if (!active) return;
+  if (!active) {
+    document.getElementById('pAvatarBtn').textContent='👤';
+    document.getElementById('pNameBtn').textContent='Create profile';
+    list.replaceChildren();return;
+  }
 
   // Update button
   document.getElementById('pAvatarBtn').textContent       = active.emoji;
@@ -1149,7 +1385,7 @@ function saveRename(id) {
   const prof = state.profiles.find(p => p.id === id);
   if (prof) {
     prof.name = name;
-    localStorage.setItem('df2_profiles', JSON.stringify(state.profiles));
+    localStorage.setItem(accountKey('profiles'), JSON.stringify(state.profiles));
     _scheduleSyncToFirestore();
   }
   _renamingProfileId = null;
@@ -1167,19 +1403,22 @@ function handleRenameKey(e, id) {
 }
 
 function switchToProfile(id) {
+  if(!state.profiles.some(p=>p.id===id))return;
   document.getElementById('profileDrop').classList.remove('open');
   if (id === state.activeProfileId) return;
 
   // Stop timer if running
-  if (state.timer.running) stopTimer();
+  if (state.timer.running || state.timer.resumePending) stopTimer('profile');
 
   // Save current profile fully
   save();
 
   // Switch
+  _pendingView=null;_clearRenderedProfileEditors();
   state.activeProfileId = id;
-  localStorage.setItem('df2_activeProfile', id);
+  localStorage.setItem(accountKey('activeProfile'), id);
   loadProfileData(id);
+  _applyProfileAppearance();_renderWorkspaceAvailability();_scheduleSyncToFirestore();
 
   // Re-render everything
   document.documentElement.setAttribute('data-theme', state.settings.dark ? 'dark' : 'light');
@@ -1212,10 +1451,10 @@ function deleteProfile(id) {
 
   // Wipe all namespaced keys
   ['entries','pomlog','settings','timer','achievements','quicknotes','customcats','lastDate','eod_shown']
-    .forEach(k => localStorage.removeItem(`df2_p${id}_${k}`));
+    .forEach(k => localStorage.removeItem(profileKey(id, k)));
 
   state.profiles = state.profiles.filter(p => p.id !== id);
-  localStorage.setItem('df2_profiles', JSON.stringify(state.profiles));
+  localStorage.setItem(accountKey('profiles'), JSON.stringify(state.profiles));
 
   if (state.activeProfileId === id) {
     switchToProfile(state.profiles[0].id);
@@ -1223,6 +1462,7 @@ function deleteProfile(id) {
     renderProfileSelector();
   }
   showToast('Profile deleted.');
+  _scheduleSyncToFirestore();
 }
 
 /* ── Create profile modal ─────────────────────────── */
@@ -1292,7 +1532,7 @@ function submitCreateProfile() {
   const id   = 'p_' + Date.now().toString(36);
   const prof = { id, name, emoji: _newProfileEmoji, color: _newProfileColor, createdAt: Date.now() };
   state.profiles.push(prof);
-  localStorage.setItem('df2_profiles', JSON.stringify(state.profiles));
+  localStorage.setItem(accountKey('profiles'), JSON.stringify(state.profiles));
   closeModal('createProfileModal');
   switchToProfile(id);
   showToast(`✓ Profile "${_newProfileEmoji} ${name}" created!`);
@@ -1333,7 +1573,7 @@ function renderCalendar() {
   for (let i = 0; i < startDow; i++) html += '<span class="cal-cell empty"></span>';
 
   for (let d = 1; d <= lastDay.getDate(); d++) {
-    const ds    = new Date(year, month, d).toLocaleDateString('en-CA');
+    const ds    = DailyFlowWorkflows.dateKey(new Date(year, month, d));
     const cnt   = (state.notes.entries[ds] || []).length;
     const poms  = state.pomLog[ds] || 0;
     const isFut = ds > today;
@@ -1341,7 +1581,7 @@ function renderCalendar() {
     // Ghost heat: any past day with undismissed pending-unrolled tasks
     const dismissed = new Set(state.settings.ghostDismissed || []);
     const hasGhost = !isFut && ds < today && (state.notes.entries[ds] || []).some(
-      e => !e.done && !e.rolledTo && !dismissed.has(e.id)
+      e => !e.done && !e.rolledTo && !e.archived && !dismissed.has(e.id)
     );
 
     const cls   = [
@@ -1349,17 +1589,17 @@ function renderCalendar() {
       ds === today             ? 'cal-today'    : '',
       ds === state.notes.date  ? 'cal-selected' : '',
       isFut                    ? 'cal-future'   : '',
-      cnt > 0 && !isFut        ? 'cal-active'   : '',
+      cnt > 0                 ? 'cal-active'   : '',
       hasGhost                 ? 'cal-ghost'    : '',
     ].filter(Boolean).join(' ');
 
-    const dot = cnt > 0 && !isFut
+    const dot = cnt > 0
       ? `<span class="cal-dot" style="background:${poms > 0 ? 'var(--c-long)' : 'var(--primary)'}"></span>`
       : '';
 
     const ghostIndicator = hasGhost ? '<span class="cal-ghost-dot"></span>' : '';
-    const title = !isFut ? `${ds}: ${cnt} entr${cnt===1?'y':'ies'}${poms?' · 🍅'+poms:''}${hasGhost?' · 👻 ghosts':''}` : '';
-    const click = !isFut ? `onclick="navigateToDate('${ds}')"` : '';
+    const title = `${ds}: ${cnt} entr${cnt===1?'y':'ies'}${poms?' · 🍅'+poms:''}${hasGhost?' · earlier unfinished':''}`;
+    const click = `onclick="navigateToDate('${ds}')"`;
     html += `<span class="${cls}" ${click} title="${title}">${d}${dot}${ghostIndicator}</span>`;
   }
 
@@ -1375,6 +1615,8 @@ function calNav(delta) {
 }
 
 function navigateToDate(dateStr) {
+  if (!DailyFlowWorkflows.validDate(dateStr)) return;
+  state.ui.taskScope = 'daily';
   state.notes.date = dateStr;
   // Sync calendar to show the selected month
   const d = new Date(dateStr + 'T00:00:00');
@@ -1449,175 +1691,219 @@ function renderAnalyticsDayDetail() {
    PERSISTENCE
 ───────────────────────────────────────────────────── */
 
-function pk(suffix) {
-  // Profile-namespaced localStorage key
-  return `df2_p${state.activeProfileId}_${suffix}`;
-}
+function pk(suffix) { return profileKey(state.activeProfileId, suffix); }
 
 function saveTimerState() {
   if (!state.activeProfileId) return;
-  try {
-    localStorage.setItem(pk('timer'), JSON.stringify({
-      cyclePos: state.timer.cyclePos, totalToday: state.timer.totalToday,
-      date: todayStr(), mode: state.timer.mode, timeLeft: state.timer.timeLeft,
-      running: state.timer.running, savedAt: Date.now(),
-    }));
-  } catch (_) {}
+  try { localStorage.setItem(pk('timer'), JSON.stringify(getTimerSnapshot())); }
+  catch (error) { _syncStatus('storage', {label:'Needs attention',error:'Timer could not be saved: ' + error.message}); }
 }
-
 function save() {
   if (!state.activeProfileId) return;
-  const timerSnap = {
-    cyclePos: state.timer.cyclePos, totalToday: state.timer.totalToday,
-    date: todayStr(), mode: state.timer.mode, timeLeft: state.timer.timeLeft,
-    running: state.timer.running, savedAt: Date.now(),
-  };
-  localStorage.setItem(pk('entries'),      JSON.stringify(state.notes.entries));
-  localStorage.setItem(pk('pomlog'),        JSON.stringify(state.pomLog));
-  localStorage.setItem(pk('settings'),      JSON.stringify(state.settings));
-  localStorage.setItem(pk('timer'),         JSON.stringify(timerSnap));
-  localStorage.setItem(pk('achievements'),  JSON.stringify(state.achievements));
-  localStorage.setItem(pk('quicknotes'),    JSON.stringify(state.quickNotes));
-  localStorage.setItem(pk('customcats'),    JSON.stringify(state.customCats));
-  localStorage.setItem(pk('lastDate'),      todayStr());
-  localStorage.setItem('df2_profiles',      JSON.stringify(state.profiles));
-  localStorage.setItem('df2_activeProfile', state.activeProfileId);
-  // Sync to Firestore (debounced — waits 1.5s of inactivity)
-  _scheduleSyncToFirestore();
+  _scheduleSyncToFirestore(); // Synchronous intent journal precedes cache changes.
+  _storeProfile(state.activeProfileId, _profileSnapshot());
+  saveTimerState();
+  localStorage.setItem(pk('lastDate'), todayStr());
+  localStorage.setItem(accountKey('profiles'), JSON.stringify(state.profiles));
+  localStorage.setItem(accountKey('activeProfile'), state.activeProfileId);
 }
-
 function loadProfileData(pid) {
-  // Reset to clean defaults before loading
-  state.notes.entries  = {};
-  state.pomLog         = {};
-  state.quickNotes     = [];
-  state.customCats     = [];
-  state.achievements   = { unlocked: [] };
-  state.settings       = { ...DEFAULT_SETTINGS };
-  state.timer.mode     = 'work';
-  state.timer.timeLeft = DEFAULT_SETTINGS.workDuration * 60;
-  state.timer.cyclePos = 0;
-  state.timer.totalToday = 0;
-  _timerShouldResume   = false;
-
-  try {
-    const e = localStorage.getItem(`df2_p${pid}_entries`);
-    if (e) state.notes.entries = JSON.parse(e);
-
-    const p = localStorage.getItem(`df2_p${pid}_pomlog`);
-    if (p) state.pomLog = JSON.parse(p);
-
-    const s = localStorage.getItem(`df2_p${pid}_settings`);
-    if (s) state.settings = { ...DEFAULT_SETTINGS, ...JSON.parse(s) };
-
-    const ach = localStorage.getItem(`df2_p${pid}_achievements`);
-    if (ach) state.achievements = { ...state.achievements, ...JSON.parse(ach) };
-
-    const qn = localStorage.getItem(`df2_p${pid}_quicknotes`);
-    if (qn) state.quickNotes = JSON.parse(qn);
-
-    const cc = localStorage.getItem(`df2_p${pid}_customcats`);
-    if (cc) state.customCats = JSON.parse(cc);
-
-    // Restore timer
-    const t = localStorage.getItem(`df2_p${pid}_timer`);
-    if (t) {
-      const sv = JSON.parse(t);
-      if (sv.date === todayStr()) {
-        state.timer.cyclePos   = sv.cyclePos   || 0;
-        state.timer.totalToday = sv.totalToday || 0;
-      }
-      if (sv.mode && ['work','shortBreak','longBreak'].includes(sv.mode)) {
-        state.timer.mode = sv.mode;
-      }
-      if (typeof sv.timeLeft === 'number' && sv.timeLeft > 0) {
-        let restored = sv.timeLeft;
-        if (sv.running && sv.savedAt) {
-          restored = sv.timeLeft - Math.floor((Date.now() - sv.savedAt) / 1000);
-        }
-        if (restored > 0) {
-          state.timer.timeLeft  = restored;
-          state.timer._restored = true;
-          if (sv.running) _timerShouldResume = true;
-        }
-      }
-    }
-  } catch (_) {}
+  _recoverTimeCheckpoint(pid);
+  clearInterval(state.timer.iv);
+  state.notes.entries = {}; state.pomLog = {}; state.focusLog = {};
+  state.quickNotes = []; state.customCats = []; state.achievements = {unlocked:[]};
+  state.settings = {...DEFAULT_SETTINGS};
+  _timerShouldResume = false;
+  const read = (name, fallback) => {
+    const raw = localStorage.getItem(profileKey(pid, name));
+    if (!raw) return fallback;
+    try { return JSON.parse(raw); }
+    catch { _syncStatus('storage', {label:'Needs attention',error:'A saved ' + name + ' record needs recovery; original data was retained.'}); return fallback; }
+  };
+  state.notes.entries = read('entries', {});
+  state.pomLog = read('pomlog', {}); state.focusLog = read('focusLog', {});
+  state.settings = {...DEFAULT_SETTINGS, ...read('settings', {})};
+  state.achievements = {...state.achievements, ...read('achievements', {})};
+  state.quickNotes = read('quicknotes', []); state.customCats = read('customcats', []);
+  _capturedProfiles.set(pid, read('document', {}));
+  restoreTimerSnapshot(read('timer', {}));
 }
-
 function migrateToProfiles() {
-  // One-time migration: move flat df2_* data to a default profile
-  const def = { id: 'p_default', name: 'Personal', emoji: '👤', color: '#7C3AED', createdAt: Date.now() };
-  state.profiles = [def];
-  state.activeProfileId = def.id;
-
-  const FLAT_KEYS = ['entries','pomlog','settings','timer','achievements','quicknotes','customcats','lastDate'];
-  FLAT_KEYS.forEach(k => {
-    const v = localStorage.getItem(`df2_${k}`);
-    if (v) localStorage.setItem(`df2_p${def.id}_${k}`, v);
-  });
-
-  localStorage.setItem('df2_profiles',      JSON.stringify(state.profiles));
-  localStorage.setItem('df2_activeProfile', def.id);
-  loadProfileData(def.id);
-}
-
-function load() {
-  try {
-    const raw = localStorage.getItem('df2_profiles');
-    if (raw) state.profiles = JSON.parse(raw);
-
-    if (!state.profiles.length) {
-      migrateToProfiles();
-      return;
+  const def = {id:'p_default',name:'Personal',emoji:'👤',color:'#7C3AED',createdAt:Date.now()};
+  state.profiles = [def]; state.activeProfileId = def.id;
+  // Legacy data is not associated with a known Firebase UID. It may only be
+  // recovered in the isolated local preview, never attached to a signed-in user.
+  if (window._df_localMode && !_currentUser) {
+    const oldProfiles = localStorage.getItem('df2_profiles');
+    if (oldProfiles) {
+      try { const parsed=JSON.parse(oldProfiles); if (parsed.length) state.profiles=parsed; } catch {}
     }
-
-    const savedId = localStorage.getItem('df2_activeProfile');
-    state.activeProfileId = (savedId && state.profiles.find(p => p.id === savedId))
-      ? savedId
-      : state.profiles[0].id;
-
-    loadProfileData(state.activeProfileId);
-  } catch (_) {
-    if (!state.profiles.length) migrateToProfiles();
+    for (const p of state.profiles) {
+      for (const name of ['entries','pomlog','settings','timer','achievements','quicknotes','customcats','lastDate']) {
+        const previous=localStorage.getItem('df2_p'+p.id+'_'+name) || (p.id==='p_default' ? localStorage.getItem('df2_'+name) : null);
+        if (previous) localStorage.setItem(profileKey(p.id,name),previous);
+      }
+    }
+    state.activeProfileId=state.profiles[0].id;
   }
+  localStorage.setItem(accountKey('profiles'),JSON.stringify(state.profiles));
+  localStorage.setItem(accountKey('activeProfile'),state.activeProfileId);
+  loadProfileData(state.activeProfileId);
+}
+function load() {
+  state.profiles=[];
+  try { state.profiles=JSON.parse(localStorage.getItem(accountKey('profiles')) || '[]'); } catch {}
+  if (!state.profiles.length) {
+    if(_currentUser){_clearProfileWorkspace();return;}
+    migrateToProfiles();return;
+  }
+  const saved=localStorage.getItem(accountKey('activeProfile'));
+  state.activeProfileId=state.profiles.some(p=>p.id===saved) ? saved : state.profiles[0].id;
+  loadProfileData(state.activeProfileId);
 }
 
-/* ─────────────────────────────────────────────────────
-   TIMER – Logic
-───────────────────────────────────────────────────── */
+/* TIMER — logic and snapshots are implemented below. */
 
 function setMode(mode) {
-  if (state.timer.running) stopTimer();
-  state.timer.mode      = mode;
-  state.timer.timeLeft  = getModeSecs(mode);
-  state.timer._restored = false; // manual mode switch clears any restored state
+  if (!MODE_LABELS[mode]) return;
+  if (state.timer.running) stopTimer('switch');
+  Object.assign(state.timer, {mode, timeLeft: getModeSecs(mode), durationMs: getModeSecs(mode)*1000,
+    remainingMs: getModeSecs(mode)*1000, elapsedMs: 0, sessionId: null, segmentIndex: 0,
+    segmentStartedAt: null, deadlineAt: null, resumePending: false, _restored: false});
   saveTimerState();
   renderTimerAll();
 }
 
 function startTimer() {
+  if(!state.activeProfileId)return;
+  if (state.timer.running) return;
+  if (!flushPendingTimeSegments()) return;
+  const timer = state.timer;
+  if (timer.resumePending) {
+    timer.resumePending = false;
+    timer.running = true;
+    timer.iv = setInterval(tick, 250);
+    tick();
+    renderTimerAll();
+    applyFocusMode();
+    return;
+  }
+  if (!timer.sessionId) {
+    timer.sessionId = 'session_' + (globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`);
+    timer.segmentIndex = 0;
+    timer.profileId = state.activeProfileId;
+    timer.durationMs = getModeSecs(timer.mode)*1000;
+    // A restored legacy pause may have a remaining time but no session identity.
+    if (!Number.isFinite(timer.remainingMs)) timer.remainingMs = timer.durationMs;
+    if (!Number.isFinite(timer.elapsedMs)) timer.elapsedMs = 0;
+  }
+  timer.segmentStartedAt = Date.now();
+  timer.deadlineAt = timer.mode === 'stopwatch' ? null : timer.segmentStartedAt + timer.remainingMs;
   state.timer.running = true;
   saveTimerState();
   beep('start');
   sendDesktopNotif(
-    state.timer.mode === 'work' ? '🍅 Focus session started' : '☕ Break started',
+    state.timer.mode === 'stopwatch' ? '⏱ Stopwatch started' : state.timer.mode === 'work' ? '🍅 Focus session started' : '☕ Break started',
     fmtTime(state.timer.timeLeft) + ' on the clock'
   );
-  state.timer.iv = setInterval(tick, 1000);
+  state.timer.iv = setInterval(tick, 250);
   renderPlayBtn();
   updateNavWave();
   applyFocusMode();
 }
 
-function stopTimer() {
+function stopTimer(reason = 'pause', completedPomodoro = false) {
+  const timer = state.timer;
+  const pending = [...(timer.pendingSegments || [])];
+  if (reason === 'pause' && timer.running && timer.mode !== 'stopwatch' && Date.now() >= timer.deadlineAt) {
+    timerDone();
+    return;
+  }
+  if (timer.running || timer.resumePending) {
+    const now = Date.now();
+    const end = timer.mode === 'stopwatch' ? now : Math.min(now, timer.deadlineAt);
+    const timing = DailyFlowWorkflows.clock(timer, now);
+    const parts = DailyFlowWorkflows.splitSegment(timer.segmentStartedAt, end);
+    if (!parts.length && completedPomodoro) parts.push({date: todayStr(), startedAt:end, endedAt:end, activeSeconds:0});
+    // Breaks are never recorded as focused work. The hook owns totals and deduplication.
+    if (timer.mode === 'work' || timer.mode === 'stopwatch') {
+      parts.forEach((part, index) => {
+        const complete = completedPomodoro && index === parts.length - 1;
+        if (part.activeSeconds || complete) pending.push({
+          ...part, id: `${timer.sessionId}_${timer.segmentIndex++}`, sessionId: timer.sessionId,
+          profileId: timer.profileId || state.activeProfileId, taskId: timer.activeEntryId || null,
+          taskDate: timer.activeEntryDate || null, kind: timer.mode === 'stopwatch' ? 'stopwatch' : 'pomodoro',
+          completedPomodoro: complete, reason,
+        });
+      });
+    }
+    timer.remainingMs = timing.remainingMs;
+    timer.elapsedMs = timing.elapsedMs;
+    timer.timeLeft = timer.mode === 'stopwatch' ? Math.floor(timing.elapsedMs/1000) : Math.ceil(timing.remainingMs/1000);
+    timer.segmentStartedAt = null;
+    timer.deadlineAt = null;
+    timer.resumePending = false;
+  }
   clearInterval(state.timer.iv);
   state.timer.iv      = null;
   state.timer.running = false;
+  state.timer.pendingSegments = pending;
+  // Persist the stopped clock and delivery intent together before crediting any segment.
   saveTimerState();
+  flushPendingTimeSegments();
   renderPlayBtn();
   updateNavWave();
   applyFocusMode();
+  renderTimeDisplay();
+  renderStats();
+  updateSessionBanner();
+}
+
+function flushPendingTimeSegments() {
+  const timer = state.timer;
+  try {
+    while (timer.pendingSegments?.length) {
+      recordTimeSegment(timer.pendingSegments[0]);
+      timer.pendingSegments.shift();
+      saveTimerState();
+    }
+    return true;
+  } catch (error) {
+    console.error('Pending timer segment retained for retry:', error);
+    showToast('Time saved on this device; retry recording before starting another session.');
+    return false;
+  }
+}
+
+function getTimerSnapshot() {
+  const {iv, _restored, ...snapshot} = state.timer;
+  return {...snapshot, running: !!(snapshot.running || snapshot.resumePending), version: 2, date: todayStr(), savedAt: Date.now()};
+}
+
+function restoreTimerSnapshot(snapshot = {}) {
+  clearInterval(state.timer.iv);
+  const mode = MODE_LABELS[snapshot.mode] ? snapshot.mode : 'work';
+  const durationMs = getModeSecs(mode)*1000;
+  const remainingMs = Number.isFinite(snapshot.remainingMs) ? Math.max(0, snapshot.remainingMs)
+    : Number.isFinite(snapshot.timeLeft) ? Math.max(0, snapshot.timeLeft*1000) : durationMs;
+  Object.assign(state.timer, {mode, running:false, iv:null, durationMs, remainingMs, elapsedMs:0,
+    deadlineAt:null, segmentStartedAt:null, sessionId:null, segmentIndex:0, activeEntryId:null,
+    activeEntryDate:null, profileId:state.activeProfileId, cyclePos:0, resumePending:false, pendingSegments:[]},
+    snapshot.version === 2 ? snapshot : {});
+  state.timer.iv = null;
+  state.timer.running = false;
+  state.timer.totalToday = state.pomLog[todayStr()] || 0;
+  state.timer._restored = true;
+  if (snapshot.version !== 2) {
+    // Legacy snapshots cannot identify a work segment safely; restore them paused.
+    state.timer.cyclePos = snapshot.cyclePos || 0;
+    state.timer.timeLeft = Math.ceil(remainingMs/1000);
+  }
+  const resumable = snapshot.version === 2 && snapshot.running && snapshot.sessionId &&
+    Number.isFinite(snapshot.segmentStartedAt) && (mode === 'stopwatch' || Number.isFinite(snapshot.deadlineAt));
+  state.timer.resumePending = !!resumable;
+  _timerShouldResume = !!resumable;
+  flushPendingTimeSegments();
 }
 
 /* ── SVG wave paths — generated once on first call ── */
@@ -1680,8 +1966,9 @@ function updateNavWave() {
   const wrap = document.getElementById('headerWaveWrap');
   if (!wrap) return;
 
-  const total   = getModeSecs(state.timer.mode);
-  const pct     = Math.max(0, Math.min(100, ((total - state.timer.timeLeft) / total) * 100));
+  const total   = state.timer.durationMs / 1000 || 1;
+  const pct     = state.timer.mode === 'stopwatch' ? (state.timer.timeLeft > 0 ? 35 : 0)
+    : Math.max(0, Math.min(100, ((total - state.timer.timeLeft) / total) * 100));
   const running = state.timer.running;
 
   if (running || pct > 0) {
@@ -1699,8 +1986,10 @@ function updateNavWave() {
 }
 
 function tick() {
-  state.timer.timeLeft--;
-  if (state.timer.timeLeft <= 0) {
+  if (!state.timer.running) return;
+  const timing = DailyFlowWorkflows.clock(state.timer, Date.now());
+  state.timer.timeLeft = state.timer.mode === 'stopwatch' ? Math.floor(timing.elapsedMs/1000) : Math.ceil(timing.remainingMs/1000);
+  if (state.timer.mode !== 'stopwatch' && timing.remainingMs <= 0) {
     timerDone();
   } else {
     renderRing();
@@ -1710,22 +1999,13 @@ function tick() {
 }
 
 function timerDone() {
-  stopTimer();
+  if (!state.timer.running || state.timer.mode === 'stopwatch' || !state.timer.sessionId || Date.now() < state.timer.deadlineAt) return;
   const wasWork = state.timer.mode === 'work';
+  stopTimer('complete', wasWork);
 
   if (wasWork) {
     state.timer.cyclePos = (state.timer.cyclePos + 1) % state.settings.longBreakInterval;
-    state.timer.totalToday++;
-
-    // Increment active entry's pomodoro count
-    if (state.timer.activeEntryId) {
-      const entry = findEntry(state.timer.activeEntryId);
-      if (entry) { entry.pomodoros = (entry.pomodoros || 0) + 1; }
-    }
-
-    // Log pomodoro for today
-    const d = todayStr();
-    state.pomLog[d] = (state.pomLog[d] || 0) + 1;
+    state.timer.totalToday = state.pomLog[todayStr()] || 0;
 
     save();
     beep('done');
@@ -1738,28 +2018,37 @@ function timerDone() {
 
     const nextMode = state.timer.cyclePos === 0 ? 'longBreak' : 'shortBreak';
     setMode(nextMode);
-    if (state.settings.autoStartBreaks) startTimer();
+    if (state.settings.autoStartBreaks && !document.hidden) startTimer();
   } else {
     beep('done');
     showToast('☕ Break over! Ready to focus?');
     sendDesktopNotif('☕ Break over!', 'Ready to focus?');
     setMode('work');
-    if (state.settings.autoStartWork) startTimer();
+    if (state.settings.autoStartWork && !document.hidden) startTimer();
   }
 }
 
 function resetTimer() {
-  stopTimer();
-  state.timer.timeLeft = getModeSecs(state.timer.mode);
-  const ring = document.getElementById('timerRing');
-  ring.style.transition = 'none';
-  renderRing();
-  requestAnimationFrame(() => requestAnimationFrame(() => { ring.style.transition = ''; }));
-  renderTimeDisplay();
-  updateNavWave();
+  stopTimer('reset');
+  setMode(state.timer.mode);
 }
 
-function skipTimer() { stopTimer(); timerDone(); }
+function skipTimer() {
+  const mode = state.timer.mode;
+  stopTimer('skip');
+  setMode(mode === 'work' ? 'shortBreak' : 'work');
+  showToast('Skipped. No Pomodoro completion added.');
+}
+
+function finishTimer() {
+  if (state.timer.running && state.timer.mode !== 'stopwatch' && Date.now() >= state.timer.deadlineAt) {
+    timerDone();
+    return;
+  }
+  stopTimer('finish');
+  setMode(state.timer.mode);
+  showToast('Tracked time saved.');
+}
 
 /* ─────────────────────────────────────────────────────
    TIMER – Rendering
@@ -1772,6 +2061,7 @@ function renderTimerAll() {
   renderPlayBtn();
   renderDots();
   updateNavWave();
+  updateSessionBanner();
 }
 
 function renderTimerModeUI() {
@@ -1781,6 +2071,8 @@ function renderTimerModeUI() {
   document.querySelectorAll('.tab').forEach(t => {
     t.classList.toggle('active', t.dataset.mode === state.timer.mode);
   });
+  document.querySelector('[data-timer-kind="stopwatch"]')?.classList.toggle('active', state.timer.mode === 'stopwatch');
+  document.getElementById('skipBtn').hidden = state.timer.mode === 'stopwatch';
 
   document.getElementById('timerLabel').textContent = MODE_LABELS[state.timer.mode];
 
@@ -1790,7 +2082,7 @@ function renderTimerModeUI() {
 }
 
 function renderRing() {
-  const prog = state.timer.timeLeft / getModeSecs(state.timer.mode);
+  const prog = state.timer.mode === 'stopwatch' ? 1 : Math.max(0, Math.min(1, state.timer.timeLeft / (state.timer.durationMs/1000 || getModeSecs(state.timer.mode))));
   document.getElementById('timerRing').style.strokeDashoffset = CIRCUMFERENCE * (1 - prog);
 }
 
@@ -1805,10 +2097,12 @@ function renderPlayBtn() {
   const txt   = document.getElementById('playText');
   const play  = btn.querySelector('.play-icon');
   const pause = btn.querySelector('.pause-icon');
+  const finish = document.getElementById('finishBtn');
+  if (finish) finish.disabled = !state.timer.sessionId;
   if (state.timer.running) {
     txt.textContent = 'Pause'; play.style.display = 'none'; pause.style.display = 'block';
   } else {
-    txt.textContent = 'Start'; play.style.display = 'block'; pause.style.display = 'none';
+    txt.textContent = state.timer.sessionId || state.timer.remainingMs !== state.timer.durationMs ? 'Resume' : 'Start'; play.style.display = 'block'; pause.style.display = 'none';
   }
 }
 
@@ -1832,9 +2126,10 @@ function renderDots() {
 ───────────────────────────────────────────────────── */
 
 function renderStats() {
-  const entries = state.notes.entries[state.notes.date] || [];
+  const entries = (state.notes.entries[todayStr()] || []).filter(entry => !entry.archived && !entry.rolledTo);
   document.getElementById('sEntries').textContent = entries.length;
-  const poms = state.timer.totalToday;
+  const poms = state.pomLog[todayStr()] || 0;
+  state.timer.totalToday = poms;
   const goal = state.settings.dailyGoal || 0;
   if (goal > 0) {
     const pct = Math.min(100, Math.round((poms / goal) * 100));
@@ -1844,7 +2139,9 @@ function renderStats() {
     document.getElementById('sPomodos').textContent = poms;
     document.getElementById('sPomodos').title = '';
   }
-  document.getElementById('sFocus').textContent = `${poms * state.settings.workDuration}m`;
+  const seconds = state.focusLog?.[todayStr()] || 0;
+  document.getElementById('sFocus').textContent = seconds >= 60 ? `${Math.floor(seconds/60)}m` : `${seconds}s`;
+  document.getElementById('sFocus').title = `${seconds} recorded seconds today`;
   renderDots();
   renderGhostBanner();
   renderGhostDrawer();
@@ -1859,14 +2156,14 @@ function renderDateHeader() {
   document.getElementById('dateMain').textContent = main;
   document.getElementById('dateSub').textContent  = sub || '';
   const next = document.getElementById('nextDay');
-  next.disabled = state.notes.date >= todayStr();
+  next.disabled = false;
   next.style.opacity = next.disabled ? '.3' : '1';
   syncEntryDatePicker();
 }
 
 function changeDate(delta) {
   const str = offsetDate(state.notes.date, delta);
-  if (str > todayStr()) return;
+  state.ui.taskScope = 'daily';
   state.notes.date = str;
   renderDateHeader();
   renderLog();
@@ -1875,6 +2172,7 @@ function changeDate(delta) {
 }
 
 function goToday() {
+  state.ui.taskScope = 'daily';
   state.notes.date = todayStr();
   renderDateHeader();
   renderLog();
@@ -1905,9 +2203,9 @@ function _renderNewStList() {
     ${_newSubtasks.map((t, i) => `
     <div class="new-st-item">
       <span class="new-st-bullet">◦${i+1}</span>
-      <input class="new-st-input" value="${t.replace(/"/g,'&quot;')}"
+      <input class="new-st-input" value="${esc(t)}"
         placeholder="Sub-task ${i+1}…"
-        onchange="_newSubtasks[${i}]=this.value"
+        oninput="_newSubtasks[${i}]=this.value"
         onkeydown="if(event.key==='Enter'){event.preventDefault();_addNewSubtask();}if(event.key==='Backspace'&&this.value===''){event.preventDefault();_removeNewSt(${i});}" />
       <button class="st-del" onclick="_removeNewSt(${i})" title="Remove">✕</button>
     </div>`).join('')}
@@ -1933,6 +2231,7 @@ function _removeNewSt(i) {
 }
 
 function addEntry() {
+  if(!state.activeProfileId){showToast('Create a profile first.');return;}
   const input     = document.getElementById('entryInput');
   const desc      = document.getElementById('descInput');
   const datePick  = document.getElementById('entryDate');
@@ -1947,9 +2246,14 @@ function addEntry() {
 
   // Use the date picker value if set, otherwise fall back to current view date
   const targetDate = (datePick?.value) || state.notes.date;
+  if (!DailyFlowWorkflows.validDate(targetDate)) {
+    showToast('Choose a valid task date.');
+    datePick?.focus();
+    return;
+  }
 
   const entry = {
-    id:         Date.now().toString(),
+    id:         'task_' + (globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`),
     content:    text,
     notes:      desc.value.trim(),
     cat:        document.getElementById('catSel').value,
@@ -1959,7 +2263,7 @@ function addEntry() {
     ts:         Date.now(),
     done:       false,
     pomodoros:  0,
-    subtasks:   _newSubtasks.map(t => ({ id: Date.now().toString() + Math.random(), text: t, done: false })),
+    subtasks:   _newSubtasks.map(t => t.trim()).filter(Boolean).map(t => ({ id: Date.now().toString() + Math.random(), text: t, done: false })),
     comments:   [],
     rolledFrom:   null,
     rolledTo:     null,
@@ -1984,7 +2288,7 @@ function addEntry() {
   const isDifferentDate = targetDate !== state.notes.date;
   if (isDifferentDate) {
     const [lbl] = fmtDate(targetDate);
-    showToast(`✓ Task added to ${lbl} — click to go there`, () => navigateToDate(targetDate));
+    showToast(`✓ Task added to ${lbl}`, () => navigateToDate(targetDate));
     // Just update calendar to reflect the new dot
     renderCalendar();
   } else {
@@ -1993,21 +2297,24 @@ function addEntry() {
     renderCalendar();
   }
   checkAchievements();
+  renderStats();
+  if (state.ui.taskScope !== 'daily') renderLog();
+  input.focus();
 }
 
 function syncEntryDatePicker() {
   const dp = document.getElementById('entryDate');
   if (!dp) return;
-  dp.value = state.notes.date;
+  if (!state.ui.entryDateExplicit || !dp.value) dp.value = state.notes.date;
   // Highlight if different from today
   dp.classList.toggle('date-changed', dp.value !== todayStr());
 }
 
 function delEntry(id) {
-  const d = state.notes.date;
+  const d = DailyFlowWorkflows.locate(state.notes.entries, id)?.date;
   if (state.notes.entries[d]) {
     state.notes.entries[d] = state.notes.entries[d].filter(e => e.id !== id);
-    if (state.timer.activeEntryId === id) { state.timer.activeEntryId = null; updateSessionBanner(); }
+    if (state.timer.activeEntryId === id) trackEntry(id);
     save(); renderLog(); renderStats(); renderCalendar();
   }
 }
@@ -2047,9 +2354,10 @@ function startEdit(id, fromDblclick) {
       entry.tags    = parseTags(val);
     }
     if (catSelEl) entry.cat = catSelEl.value;
+    _editId = null;
+    inpEl.classList.remove('show');
     save();
     renderLog();
-    _editId = null;
   } else {
     // Enter edit mode — flash confirms dblclick
     if (fromDblclick) {
@@ -2076,6 +2384,8 @@ function cancelEdit(id) {
   const ctrlsEl = document.getElementById(`editcontrols-${id}`);
   if (textEl)  textEl.classList.remove('hide');
   if (inpEl)   inpEl.classList.remove('show');
+  if (inpEl) inpEl.value = findEntry(id)?.content || '';
+  delete (_logDrafts[_logDraftKey()] || {})[`ei-${id}`];
   if (ctrlsEl) ctrlsEl.classList.remove('show');
   if (_editId === id) _editId = null;
 }
@@ -2089,24 +2399,34 @@ function toggleNotes(id) {
 }
 
 function trackEntry(id) {
+  if (state.timer.running) stopTimer('switch');
+  // A link change starts a fresh session; already saved segments keep their original task.
+  const mode = state.timer.mode;
+  setMode(mode);
   if (state.timer.activeEntryId === id) {
     state.timer.activeEntryId = null;
+    state.timer.activeEntryDate = null;
   } else {
     state.timer.activeEntryId = id;
+    state.timer.activeEntryDate = DailyFlowWorkflows.locate(state.notes.entries, id)?.date || null;
   }
+  saveTimerState();
   renderLog();
   updateSessionBanner();
 }
 
 function updateSessionBanner() {
   const banner = document.getElementById('sessionBanner');
+  const label = document.getElementById('timerLinkedTask');
+  if (label) label.textContent = 'No task linked · time still counts';
   if (state.timer.activeEntryId) {
     const e = findEntry(state.timer.activeEntryId);
     if (e) {
       banner.style.display = '';
       document.getElementById('bannerTask').textContent = e.content.replace(/#\w+/g,'').trim();
       const p = e.pomodoros || 0;
-      document.getElementById('bannerPoms').textContent = `${p} pomodoro${p===1?'':'s'}`;
+      document.getElementById('bannerPoms').textContent = `${p} pomodoro${p===1?'':'s'} · ${Math.floor((e.focusSeconds || 0)/60)}m tracked`;
+      if (label) label.textContent = `Linked: ${e.content} · ${state.timer.activeEntryDate || ''}`;
       return;
     }
   }
@@ -2125,7 +2445,21 @@ function reorderEntries(srcId, tgtId) {
 }
 
 function findEntry(id) {
-  return (state.notes.entries[state.notes.date] || []).find(e => e.id === id) || null;
+  return DailyFlowWorkflows.locate(state.notes.entries, id)?.entry || null;
+}
+
+function archiveEntry(id) {
+  const entry = findEntry(id);
+  if (!entry) return;
+  entry.archived = !(entry.archived || (state.settings.ghostDismissed || []).includes(id));
+  state.settings.ghostDismissed = (state.settings.ghostDismissed || []).filter(value => value !== id);
+  save(); renderLog(); renderStats(); renderCalendar();
+  showToast(entry.archived ? 'Task archived. Open Archived to restore it.' : 'Task restored.');
+}
+
+function setTaskScope(scope) {
+  state.ui.taskScope = scope;
+  renderLog();
 }
 
 /* ─────────────────────────────────────────────────────
@@ -2137,6 +2471,7 @@ function toggleCommentForm(id) {
   state.ui.rollFormId    = null;
   state.ui.subtaskFormId = null;
   renderLog();
+  if (state.ui.commentFormId === id) document.getElementById(`cmtInput-${id}`)?.focus();
 }
 
 function cancelCommentForm() {
@@ -2153,6 +2488,7 @@ function submitComment(id) {
   if (!entry) return;
   if (!entry.comments) entry.comments = [];
   entry.comments.push({ id: Date.now().toString(), text, time: nowTime(), ts: Date.now() });
+  el.value = '';
   state.ui.commentFormId = null;
   save();
   renderLog();
@@ -2318,13 +2654,19 @@ function saveEditSubtask(entryId, stId) {
   if (!entry || !entry.subtasks) return;
   const st = entry.subtasks.find(s => s.id === stId);
   if (st) st.text = val;
+  inputEl.style.display = 'none';
+  delete (_logDrafts[_logDraftKey()] || {})[`st-ei-${stId}`];
   save();
   renderLog();
 }
 
 function handleStEditKey(e, entryId, stId) {
   if (e.key === 'Enter')  { e.preventDefault(); saveEditSubtask(entryId, stId); }
-  if (e.key === 'Escape') { renderLog(); }
+  if (e.key === 'Escape') {
+    document.getElementById(`st-ei-${stId}`)?.style.setProperty('display', 'none');
+    delete (_logDrafts[_logDraftKey()] || {})[`st-ei-${stId}`];
+    renderLog();
+  }
 }
 
 
@@ -2334,6 +2676,7 @@ function showRollForm(id) {
   state.ui.commentFormId = null;
   state.ui.subtaskFormId = null;
   renderLog();
+  if (state.ui.rollFormId === id) document.getElementById(`rollDate-${id}`)?.focus();
 }
 
 function cancelRollForm() {
@@ -2342,68 +2685,22 @@ function cancelRollForm() {
 }
 
 function confirmRoll(id) {
-  const entry = findEntry(id);
-  if (!entry) return;
-
-  const datePickEl  = document.getElementById(`rollDate-${id}`);
-  const targetDate  = datePickEl?.value || offsetDate(state.notes.date, 1);
-  const [targetLbl] = fmtDate(targetDate);
-  const [sourceLbl] = fmtDate(state.notes.date);
-  const rollNote    = document.getElementById(`rollInput-${id}`)?.value.trim() || '';
-  const rollTime    = document.getElementById(`rollTime-${id}`)?.value.trim()  || '';
-
-  // Validate — must be after the current view date
-  if (targetDate <= state.notes.date) {
-    showToast('⚠️ Please pick a date after ' + sourceLbl);
-    datePickEl?.focus();
+  const found = DailyFlowWorkflows.locate(state.notes.entries, id);
+  if (!found) return;
+  const targetDate = document.getElementById(`rollDate-${id}`)?.value || offsetDate(found.date, 1);
+  if (!DailyFlowWorkflows.validDate(targetDate) || targetDate <= found.date) {
+    showToast('Choose a valid date after ' + found.date);
     return;
   }
-
-  // Save time spent on the original entry
-  if (rollTime) entry.timeSpent = rollTime;
-
-  // Build the roll-history system comment
-  let cmtText = `↩ Rolled from ${sourceLbl}`;
-  if (rollTime) cmtText += ` · ⏱ ${rollTime} spent`;
-  if (rollNote) cmtText += ` — ${rollNote}`;
-
-  const systemCmt = {
-    id:     (Date.now() + 1).toString(),
-    text:   cmtText,
-    time:   nowTime(),
-    ts:     Date.now() + 1,
-    system: true,
-  };
-
-  // New entry — carry ALL previous comments (including earlier roll-history)
-  const newEntry = {
-    id:         Date.now().toString(),
-    content:    entry.content,
-    notes:      entry.notes || '',
-    cat:        entry.cat,
-    priority:   entry.priority,
-    tags:       [...(entry.tags || [])],
-    time:       nowTime(),
-    ts:         Date.now(),
-    done:       false,
-    pomodoros:  0,
-    subtasks:   (entry.subtasks || []).map(s => ({ ...s, done: false })), // carry subtasks, reset done
-    rolledFrom: state.notes.date,
-    rolledTo:   null,
-    autoRollover: !!(entry.autoRollover), // carry flag if set
-    comments:   [systemCmt, ...(entry.comments || [])], // ← ALL comments preserved
-  };
-
-  if (!state.notes.entries[targetDate]) state.notes.entries[targetDate] = [];
-  state.notes.entries[targetDate].unshift(newEntry);
-
-  entry.rolledTo = targetDate;
+  const note = document.getElementById(`rollInput-${id}`)?.value.trim() || '';
+  const time = document.getElementById(`rollTime-${id}`)?.value.trim() || '';
+  if (time) found.entry.timeSpent = time;
+  const result = DailyFlowWorkflows.carry(state.notes.entries, found.date, id, targetDate, Date.now(),
+    `↩ Carried from ${found.date}${time ? ' · ⏱ '+time+' spent' : ''}${note ? ' — '+note : ''}`);
+  if (!result) return;
   state.ui.rollFormId = null;
-  save();
-  renderLog();
-  renderCalendar();
-  renderStats();
-  showToast(`✓ Task rolled to ${targetLbl}`);
+  save(); renderLog(); renderCalendar(); renderStats();
+  showToast('✓ Task carried to ' + fmtDate(targetDate)[0]);
   checkAchievements();
 }
 
@@ -2412,7 +2709,9 @@ function confirmRoll(id) {
 ───────────────────────────────────────────────────── */
 
 function getFilteredEntries() {
-  const all = state.notes.entries[state.notes.date] || [];
+  const scope = state.ui.taskScope || 'daily';
+  const all = scope === 'daily' ? (state.notes.entries[state.notes.date] || []).filter(e => !e.archived)
+    : DailyFlowWorkflows.unfinished(state.notes.entries, todayStr(), scope === 'archived', state.settings.ghostDismissed || []).map(item => item.entry);
   const q   = state.ui.search.toLowerCase();
   const cat = state.ui.filterCat;
   const pri = state.ui.filterPri;
@@ -2429,20 +2728,40 @@ function getFilteredEntries() {
 
 function renderLog() {
   const container = document.getElementById('log');
+  const previousFocus = document.activeElement;
+  const focusId = container.contains(previousFocus) ? previousFocus.id : null;
+  const selection = focusId && typeof previousFocus.selectionStart === 'number'
+    ? [previousFocus.selectionStart, previousFocus.selectionEnd] : null;
+  const draftKey = _logDraftKey();
+  const drafts = _logDrafts[draftKey] || (_logDrafts[draftKey] = {});
+  container.querySelectorAll('textarea[id], input[id], select[id]').forEach(el => {
+    if (el.classList.contains('edit-input') && !el.classList.contains('show')) return;
+    if (el.classList.contains('st-edit-input') && el.style.display === 'none') return;
+    if (el.id) drafts[el.id] = { value: el.value, editingSubtask: el.classList.contains('st-edit-input') };
+  });
+  const notesOpen = [...container.querySelectorAll('.entry-notes.show')].map(el => el.id);
+  const commentsOpen = [...container.querySelectorAll('.entry-comments:not(.cmt-collapsed)')].map(el => el.id);
   const entries   = getFilteredEntries();
+  const scope = state.ui.taskScope || 'daily';
+  document.querySelectorAll('[data-task-scope]').forEach(button => button.classList.toggle('active', button.dataset.taskScope === scope));
 
   if (!entries.length) {
     const all = (state.notes.entries[state.notes.date] || []).length;
     container.innerHTML = `
       <div class="empty">
         <div class="empty-icon">${all > 0 ? '🔍' : '📝'}</div>
-        <div class="empty-title">${all > 0 ? 'No matching entries' : 'No entries yet'}</div>
-        <div class="empty-sub">${all > 0 ? 'Try adjusting your filters.' : 'Add your first activity above!'}</div>
+        <div class="empty-title">${scope === 'archived' ? 'No archived tasks' : scope === 'unfinished' ? 'No unfinished tasks' : all > 0 ? 'No matching entries' : 'No entries yet'}</div>
+        <div class="empty-sub">${scope !== 'daily' || all > 0 ? 'Try adjusting your filters.' : 'Add your first task above!'}</div>
       </div>`;
     return;
   }
 
+  let previousGroup = '';
   container.innerHTML = entries.map(entry => {
+    const entryDate = DailyFlowWorkflows.locate(state.notes.entries, entry.id)?.date || state.notes.date;
+    const group = entryDate < todayStr() ? 'Earlier' : entryDate === todayStr() ? 'Today' : 'Upcoming';
+    const groupHeading = scope !== 'daily' && group !== previousGroup ? `<h3 class="task-group-heading">${group}</h3>` : '';
+    previousGroup = group;
     const cat        = getAllCats()[entry.cat] || CATS.other;
     const isTrack    = state.timer.activeEntryId === entry.id;
     const poms       = entry.pomodoros || 0;
@@ -2454,7 +2773,7 @@ function renderLog() {
     const subtasks   = entry.subtasks  || [];
     const stDone     = subtasks.filter(s => s.done).length;
     const stPct      = subtasks.length ? Math.round((stDone / subtasks.length) * 100) : 0;
-    const targetDate = offsetDate(state.notes.date, 1);
+    const targetDate = offsetDate(entryDate, 1);
     const [targetLbl] = fmtDate(targetDate);
     const showCmtForm  = state.ui.commentFormId  === entry.id;
     const showRollForm = state.ui.rollFormId     === entry.id;
@@ -2548,7 +2867,7 @@ function renderLog() {
             <span class="roll-field-lbl">📅 Target date <span style="color:#EF4444">*</span></span>
             <input type="date" class="range-input roll-date-pick" id="rollDate-${entry.id}"
               value="${targetDate}"
-              min="${offsetDate(state.notes.date, 1)}" />
+              min="${offsetDate(entryDate, 1)}" />
           </div>
           <div class="roll-field">
             <span class="roll-field-lbl">⏱ Time spent today <span class="ts-optional">(optional)</span></span>
@@ -2570,7 +2889,7 @@ function renderLog() {
     const catColor = cat.color || '#6B7280';
 
     return `
-      <div class="log-entry ${doneCs}" data-id="${entry.id}">
+      ${groupHeading}<div class="log-entry ${doneCs}" data-id="${entry.id}">
 
         <!-- ── Drag grip (hidden at rest, revealed on hover) ── -->
         <div class="entry-grip">
@@ -2611,10 +2930,12 @@ function renderLog() {
                 onclick="toggleNotes('${entry.id}')">▼ Show notes</button>` : ''}
             <div class="entry-meta">
               <span class="entry-time">${entry.time}</span>
+              ${scope !== 'daily' ? `<button class="task-date-link" onclick="navigateToDate('${entryDate}')">${entryDate}</button>` : ''}
               ${cat.custom
                 ? `<span class="cat-pill" style="background:${cat.color}">${cat.label}</span>`
                 : `<span class="cat-pill ${cat.pill}">${cat.label}</span>`}
               ${poms > 0 ? `<span class="pom-badge">🍅 ${poms}</span>` : ''}
+              ${entry.focusSeconds > 0 ? `<span class="time-spent-badge">⏱ ${Math.floor(entry.focusSeconds/60)}m tracked</span>` : ''}
               ${entry.timeSpent ? `<span class="time-spent-badge">⏱ ${esc(entry.timeSpent)}</span>` : ''}
               ${subtasks.length > 0
                 ? `<span class="st-meta-pill ${stDone===subtasks.length?'st-all-done':''}">${stDone}/${subtasks.length} ✓</span>` : ''}
@@ -2625,6 +2946,8 @@ function renderLog() {
             </div>
           </div>
           <div class="entry-actions">
+            <button class="act-btn archive-task" title="${entry.archived || scope === 'archived' ? 'Restore task' : 'Archive task'}"
+              onclick="archiveEntry('${entry.id}')">${entry.archived || scope === 'archived' ? 'Restore' : 'Archive'}</button>
             ${(comments.length > 0 && cmtMode === 'expandcollapse') ? `
             <button class="act-btn cmt-expand-btn" id="cmtarrow-${entry.id}"
               title="Expand/collapse comments"
@@ -2689,12 +3012,32 @@ function renderLog() {
       </div>`;
   }).join('');
 
-  // Auto-focus inline textareas after render
-  if (state.ui.commentFormId) {
-    setTimeout(() => { document.getElementById(`cmtInput-${state.ui.commentFormId}`)?.focus(); }, 30);
+  Object.entries(drafts).forEach(([id, draft]) => {
+    const el = document.getElementById(id);
+    if (!el || !container.contains(el)) return;
+    if (el.classList.contains('edit-input') && _editId !== id.slice(3)) return;
+    el.value = draft.value;
+    if (draft.editingSubtask) {
+      const stId = id.replace('st-ei-', '');
+      el.style.display = 'block';
+      document.getElementById(`st-text-${stId}`)?.style.setProperty('display', 'none');
+      document.getElementById(`st-editbtn-${stId}`)?.style.setProperty('display', 'none');
+      document.getElementById(`st-savebtn-${stId}`)?.style.setProperty('display', 'inline-flex');
+    }
+  });
+  if (_editId) {
+    document.getElementById(`et-${_editId}`)?.classList.add('hide');
+    document.getElementById(`ei-${_editId}`)?.classList.add('show');
+    document.getElementById(`editcontrols-${_editId}`)?.classList.add('show');
   }
-  if (state.ui.rollFormId) {
-    setTimeout(() => { document.getElementById(`rollInput-${state.ui.rollFormId}`)?.focus(); }, 30);
+  notesOpen.forEach(id => document.getElementById(id)?.classList.add('show'));
+  commentsOpen.forEach(id => document.getElementById(id)?.classList.remove('cmt-collapsed'));
+  if (focusId) {
+    const focus = document.getElementById(focusId);
+    focus?.focus({preventScroll:true});
+    if (focus && selection && focus.setSelectionRange && focus.type !== 'date' && focus.type !== 'number') {
+      try { focus.setSelectionRange(...selection); } catch (_) {}
+    }
   }
 }
 
@@ -3379,14 +3722,17 @@ function applySettings() {
     Notification.requestPermission();
   }
 
-  // Update timer if not running
-  if (!state.timer.running) {
+  // New durations apply to an idle session. A paused session keeps its remaining time.
+  if (!state.timer.running && !state.timer.sessionId && state.timer.remainingMs === state.timer.durationMs) {
     state.timer.timeLeft = getModeSecs(state.timer.mode);
+    state.timer.durationMs = state.timer.timeLeft*1000;
+    state.timer.remainingMs = state.timer.durationMs;
     renderTimeDisplay();
     renderRing();
   }
   renderDots();
   renderStats();
+  applyFocusMode();
   save();
 
   const msg = document.getElementById('saveMsg');
@@ -3398,9 +3744,12 @@ function applySettings() {
    NOTIFICATIONS
 ───────────────────────────────────────────────────── */
 
-function showToast(msg) {
+function showToast(msg, action) {
   const el = document.getElementById('toast');
   document.getElementById('toastMsg').textContent = msg;
+  el.onclick = typeof action === 'function' ? action : null;
+  el.style.cursor = action ? 'pointer' : '';
+  el.title = action ? 'Open this task date' : '';
   el.classList.add('show');
   clearTimeout(_toastTm);
   _toastTm = setTimeout(() => el.classList.remove('show'), 4000);
@@ -3440,99 +3789,24 @@ function toggleAutoRollover(id) {
 // Walks ALL dates between prevDate and today (handles multi-day gaps).
 // Silently rolls autoRollover=true, done=false entries forward to today.
 // Returns an array of { newEntry, sourceDate, origEntry } for the modal.
-function checkAutoRollover(prevDate) {
+function checkAutoRollover() {
   if (!state.settings.autoRollover) return [];
-  const today = todayStr();
-  if (!prevDate || prevDate >= today) return [];
-
-  const allRolled = [];
-  let cursor = prevDate;
-
-  while (cursor < today) {
-    const srcEntries = state.notes.entries[cursor] || [];
-    const toRoll = srcEntries.filter(e => e.autoRollover && !e.done && !e.rolledTo);
-
-    toRoll.forEach(entry => {
-      const sourceLbl = fmtDate(cursor)[0];
-      const systemCmt = {
-        id:     (Date.now() + 1).toString(),
-        text:   '\u21a9 Auto-carried from ' + sourceLbl,
-        time:   nowTime(),
-        ts:     Date.now() + 1,
-        system: true,
-      };
-      const newEntry = {
-        id:           Date.now().toString(),
-        content:      entry.content,
-        notes:        entry.notes || '',
-        cat:          entry.cat,
-        priority:     entry.priority,
-        tags:         [...(entry.tags || [])],
-        time:         nowTime(),
-        ts:           Date.now(),
-        done:         false,
-        pomodoros:    0,
-        subtasks:     (entry.subtasks || []).map(s => ({ ...s, done: false })),
-        rolledFrom:   cursor,
-        rolledTo:     null,
-        autoRollover: true,
-        comments:     [systemCmt, ...(entry.comments || [])],
-      };
-      if (!state.notes.entries[today]) state.notes.entries[today] = [];
-      state.notes.entries[today].unshift(newEntry);
-      entry.rolledTo = today;
-      allRolled.push({ newEntry, sourceDate: cursor, origEntry: entry });
-    });
-
-    cursor = offsetDate(cursor, 1);
+  const rolls = DailyFlowWorkflows.autoCarry(state.notes.entries, todayStr(), Date.now(), state.settings.ghostDismissed || []);
+  if (rolls.length) {
+    save(); renderLog(); renderCalendar(); renderStats();
+    showAutoRollModal(rolls);
   }
-
-  if (allRolled.length) {
-    save();
-    renderLog();
-    renderCalendar();
-    renderStats();
-  }
-  return allRolled;
+  return rolls;
 }
 
 function showAutoRollModal(rolls) {
-  if (!rolls || !rolls.length) return;
-  const modal = document.getElementById('autoRollModal');
-  const list  = document.getElementById('autoRollList');
-  if (!modal || !list) return;
-
-  list.innerHTML = rolls.map(function(r, i) {
-    const cat  = getAllCats()[r.newEntry.cat] || CATS.other;
-    const lbl  = fmtDate(r.sourceDate)[0];
-    return '<div class="ar-item" id="ar-item-' + i + '">'
-      + '<div class="ar-item-header">'
-      + '<span class="ar-cat-badge">' + cat.emoji + '</span>'
-      + '<div class="ar-item-body">'
-      + '<div class="ar-task-text">' + esc(r.newEntry.content) + '</div>'
-      + '<div class="ar-task-meta">carried from <strong>' + lbl + '</strong></div>'
-      + '</div>'
-      + '</div>'
-      + '<div class="ar-fields">'
-      + '<div class="ar-field">'
-      + '<label class="ar-label">Time spent yesterday <span class="ar-optional">(optional)</span></label>'
-      + '<input class="ar-input" id="ar-time-' + i + '" placeholder="e.g. 2 hrs, 45 min…" autocomplete="off" />'
-      + '</div>'
-      + '<div class="ar-field">'
-      + '<label class="ar-label">Roll note <span class="ar-optional">(optional)</span></label>'
-      + '<input class="ar-input" id="ar-note-' + i + '" placeholder="What happened? What\'s still needed?" autocomplete="off" />'
-      + '</div>'
-      + '</div>'
-      + '</div>';
-  }).join('');
-
-  modal._rolls = rolls;
-  openModal('autoRollModal');
-
-  setTimeout(function() {
-    const first = document.getElementById('ar-time-0');
-    if (first) first.focus();
-  }, 120);
+  if (!rolls?.length) return;
+  const summary = document.getElementById('carrySummary');
+  if (!summary) return;
+  summary.hidden = false;
+  summary.innerHTML = `<span>↺ ${rolls.length} task${rolls.length === 1 ? '' : 's'} carried to today. Progress and history kept.</span>
+    <button class="outline-btn sm-btn" onclick="navigateToDate(todayStr())">View today</button>
+    <button class="act-btn" aria-label="Dismiss carry summary" onclick="this.parentElement.hidden=true">×</button>`;
 }
 
 function saveAutoRollModal() {
@@ -3565,40 +3839,14 @@ function saveAutoRollModal() {
 }
 
 function checkEod() {
-  const shown    = localStorage.getItem(pk('eod_shown'));
+  const shown = localStorage.getItem(pk('eod_shown'));
   const prevDate = localStorage.getItem(pk('lastDate'));
-
-  // Auto-rollover runs first (silently) — before the EOD modal
-  if (prevDate && prevDate < todayStr()) {
-    const rolled = checkAutoRollover(prevDate);
-    if (rolled.length) {
-      // Show morning-review modal; EOD summary will show after it closes
-      showAutoRollModal(rolled);
-      if (state.settings.endOfDaySummary && shown !== todayStr()) {
-        const rollModal = document.getElementById('autoRollModal');
-        if (rollModal) {
-          const orig = rollModal._onClose;
-          rollModal._onClose = function() {
-            if (orig) orig();
-            if (shown !== todayStr()) {
-              showEodSummary(prevDate);
-              localStorage.setItem(pk('eod_shown'), todayStr());
-            }
-          };
-        }
-      }
-      localStorage.setItem(pk('eod_shown'), todayStr());
-      return;
-    }
-  }
-
-  // No auto-rolled tasks — normal EOD flow
-  if (!state.settings.endOfDaySummary) return;
-  if (shown === todayStr()) return;
-  if (prevDate && prevDate < todayStr()) {
+  const rolls = checkAutoRollover();
+  // The carry summary is nonblocking. An explicitly enabled EOD summary remains available.
+  if (!rolls.length && state.settings.endOfDaySummary && shown !== todayStr() && prevDate && prevDate < todayStr()) {
     showEodSummary(prevDate);
-    localStorage.setItem(pk('eod_shown'), todayStr());
   }
+  if (prevDate && prevDate < todayStr()) localStorage.setItem(pk('eod_shown'), todayStr());
 }
 
 function showEodSummary(date) {
@@ -3613,7 +3861,7 @@ function showEodSummary(date) {
     <p>Here's what you accomplished on <strong>${main}</strong>:</p>
     <br>
     <p>✅ <strong>${done}</strong> of <strong>${entries.length}</strong> tasks completed</p>
-    <p>🍅 <strong>${poms}</strong> pomodoro${poms===1?'':'s'} (${poms * state.settings.workDuration} min of focus)</p>
+    <p>🍅 <strong>${poms}</strong> pomodoro${poms===1?'':'s'} · ${Math.floor((state.focusLog?.[date] || 0)/60)} min of recorded focus</p>
     <br>
     <p><strong>Top activities:</strong></p>
     ${entries.slice(0,3).map(e => `<p>• ${esc(e.content.replace(/#\w+/g,'').trim())}</p>`).join('')}
@@ -3690,7 +3938,7 @@ function buildMarkdownExport(from, to) {
   let totPoms = 0;
   cur = from;
   while (cur <= to) { totPoms += state.pomLog[cur] || 0; cur = offsetDate(cur, 1); }
-  const totFocusMin = totPoms * state.settings.workDuration;
+  const totFocusMin = Math.floor(Object.entries(state.focusLog || {}).filter(([date]) => date >= from && date <= to).reduce((sum, [,seconds]) => sum + seconds, 0)/60);
   const focusHM     = totFocusMin >= 60
     ? `${Math.floor(totFocusMin/60)}h ${totFocusMin%60}m`
     : `${totFocusMin} min`;
@@ -3800,17 +4048,17 @@ function buildMarkdownExport(from, to) {
     const arr  = state.notes.entries[cur] || [];
     const poms = state.pomLog[cur] || 0;
     const dn   = arr.filter(e => e.done).length;
-    if (arr.length > 0 || poms > 0) {
+    if (arr.length > 0 || poms > 0 || state.focusLog?.[cur] > 0) {
       const d = new Date(cur+'T00:00:00');
       const dateStr = d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
       const dayStr  = d.toLocaleDateString('en-US',{weekday:'short'});
-      md += `| ${dateStr} | ${dayStr} | ${arr.length} | ${dn} | ${arr.length-dn} | ${poms} | ${poms*state.settings.workDuration} min |\n`;
+      md += `| ${dateStr} | ${dayStr} | ${arr.length} | ${dn} | ${arr.length-dn} | ${poms} | ${Math.floor((state.focusLog?.[cur] || 0)/60)} min |\n`;
       dTot += arr.length; dDone += dn; dPoms += poms;
     }
     cur = offsetDate(cur, 1);
   }
   const dPct = dTot ? Math.round(dDone/dTot*100) : 0;
-  md += `| **Total** | | **${dTot}** | **${dDone}** | **${dTot-dDone}** | **${dPoms}** | **${dPoms*state.settings.workDuration} min** |\n\n`;
+  md += `| **Total** | | **${dTot}** | **${dDone}** | **${dTot-dDone}** | **${dPoms}** | **${totFocusMin} min** |\n\n`;
   md += `> Overall completion rate: **${dPct}%**\n\n`;
 
   // ════════════════════════════════════════
@@ -3916,13 +4164,16 @@ function mdEntryFull(e, cats) {
 
 /* ── Excel (SheetJS) ──────────────────────────────── */
 
-function loadSheetJS(cb) {
+function loadSheetJS(cb, onError) {
   if (window.XLSX) { cb(); return; }
   showToast('⏳ Loading Excel library…');
   const s = document.createElement('script');
-  s.src     = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+  s.src     = 'vendor/xlsx.full.min.js';
   s.onload  = cb;
-  s.onerror = () => showToast('❌ Could not load Excel library. Check internet connection.');
+  s.onerror = () => {
+    const error = new Error('Excel support could not load. Reload the app and try again.');
+    showToast(error.message); if (onError) onError(error);
+  };
   document.head.appendChild(s);
 }
 
@@ -3960,18 +4211,20 @@ function buildExcelExport(from, to) {
 
   // Sheet 2: Daily Summary
   const sRows = [['Date','Day','Total','Done','Pending','% Done','Pomodoros','Focus (min)']];
-  let totT=0, totD=0, totP=0;
+  let totT=0, totD=0, totP=0, totSeconds=0;
   cur = from;
   while (cur <= to) {
     const arr  = state.notes.entries[cur] || [];
     const poms = state.pomLog[cur] || 0;
     const done = arr.filter(e => e.done).length;
     const day  = new Date(cur+'T00:00:00').toLocaleDateString('en-US',{weekday:'long'});
-    sRows.push([cur, day, arr.length, done, arr.length-done, arr.length?Math.round(done/arr.length*100)+'%':'0%', poms, poms*state.settings.workDuration]);
+    const seconds = state.focusLog?.[cur] || 0;
+    sRows.push([cur, day, arr.length, done, arr.length-done, arr.length?Math.round(done/arr.length*100)+'%':'0%', poms, Math.floor(seconds/60)]);
+    totSeconds += seconds;
     totT += arr.length; totD += done; totP += poms;
     cur = offsetDate(cur, 1);
   }
-  sRows.push(['TOTAL','',totT,totD,totT-totD,totT?Math.round(totD/totT*100)+'%':'0%',totP,totP*state.settings.workDuration]);
+  sRows.push(['TOTAL','',totT,totD,totT-totD,totT?Math.round(totD/totT*100)+'%':'0%',totP,Math.floor(totSeconds/60)]);
   const ws2 = window.XLSX.utils.aoa_to_sheet(sRows);
   ws2['!cols'] = [{wch:12},{wch:11},{wch:8},{wch:7},{wch:9},{wch:8},{wch:10},{wch:12}];
   window.XLSX.utils.book_append_sheet(wb, ws2, 'Daily Summary');
@@ -3985,26 +4238,34 @@ function buildExcelExport(from, to) {
 ───────────────────────────────────────────────────── */
 
 function exportJson() {
-  const blob = new Blob([JSON.stringify({
-    version: 2, exported: new Date().toISOString(),
-    entries: state.notes.entries, pomLog: state.pomLog, settings: state.settings,
-  }, null, 2)], { type: 'application/json' });
-  dl(blob, `dailyflow-${todayStr()}.json`);
+  dl(new Blob([JSON.stringify(createProfileBackup(),null,2)], {type:'application/json'}), `dailyflow-${todayStr()}.json`);
 }
 
 function exportCsv() {
-  const rows = [['Date','Time','Category','Priority','Content','Notes','Tags','Done','Pomodoros']];
-  Object.entries(state.notes.entries).sort((a,b) => a[0].localeCompare(b[0])).forEach(([date, arr]) => {
-    arr.forEach(e => rows.push([
-      date, e.time, e.cat, e.priority||'none',
-      `"${String(e.content).replace(/"/g,'""')}"`,
-      `"${String(e.notes||'').replace(/"/g,'""')}"`,
-      (e.tags||[]).map(t=>'#'+t).join(' '),
-      e.done?'yes':'no', e.pomodoros||0,
-    ]));
+  dl(new Blob([DailyFlowWorkflows.backupCsv(createProfileBackup())], {type:'text/csv;charset=utf-8'}), `dailyflow-${todayStr()}.csv`);
+}
+
+function createProfileBackup() {
+  return {format:'dailyflow-backup',version:3,exportedAt:new Date().toISOString(),
+    profile:{...state.profiles.find(profile=>profile.id===state.activeProfileId)},data:_profileSnapshot()};
+}
+
+function exportBackupMarkdown() {
+  dl(new Blob([DailyFlowWorkflows.backupMarkdown(createProfileBackup())],{type:'text/markdown;charset=utf-8'}),`dailyflow-${todayStr()}.md`);
+}
+
+function exportBackupExcel() {
+  const backup=createProfileBackup();
+  loadSheetJS(()=>{
+    const rows=DailyFlowWorkflows.backupRows(backup);
+    const workbook=XLSX.utils.book_new();
+    const tasks=XLSX.utils.aoa_to_sheet(rows.filter((row,index)=>index===0 || row[0]==='task')
+      .map(row=>row.slice(0,5).map(value=>String(value ?? '').slice(0,16000))));
+    tasks['!cols']=[{wch:12},{wch:12},{wch:22},{wch:48},{wch:48},{wch:48}];
+    XLSX.utils.book_append_sheet(workbook,tasks,'Tasks');
+    XLSX.utils.book_append_sheet(workbook,XLSX.utils.aoa_to_sheet(rows.filter((row,index)=>index===0 || row[0]==='backup-json')),'Backup');
+    XLSX.writeFile(workbook,`dailyflow-${todayStr()}.xlsx`);
   });
-  const blob = new Blob([rows.map(r=>r.join(',')).join('\n')], { type:'text/csv' });
-  dl(blob, `dailyflow-${todayStr()}.csv`);
 }
 
 function dl(blob, name) {
@@ -4014,19 +4275,90 @@ function dl(blob, name) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function importJson(file) {
-  const reader = new FileReader();
-  reader.onload = ev => {
+async function importJson(file) {
+  try {
+    if(file.size>10*1024*1024)throw new Error('Choose a backup smaller than 10 MB.');
+    const extension=file.name.split('.').pop().toLowerCase();
+    let backup;
+    if(extension==='xlsx') {
+      await new Promise((resolve,reject)=>loadSheetJS(resolve,reject));
+      const workbook=XLSX.read(await file.arrayBuffer(),{type:'array'});
+      if(!workbook.Sheets.Backup)throw new Error('This spreadsheet has no full backup sheet.');
+      backup=DailyFlowWorkflows.validateBackup(DailyFlowWorkflows.backupFromRows(XLSX.utils.sheet_to_json(workbook.Sheets.Backup,{header:1,defval:''})),DailyFlowSyncCore);
+    } else {
+      if(!['json','csv','md'].includes(extension))throw new Error('Choose a DailyFlow JSON, CSV, Markdown or Excel backup.');
+      backup=DailyFlowWorkflows.parseBackupText(await file.text(),extension,DailyFlowSyncCore);
+    }
+    showImportPreview(backup);
+  } catch(error) {showToast('Import could not be prepared: '+error.message);}
+}
+
+function showImportPreview(backup) {
+  document.getElementById('importPreview')?.remove();
+  const dialog=document.createElement('dialog');dialog.id='importPreview';dialog.className='backup-preview';
+  const pid=state.activeProfileId,uid=_currentUser?.uid || 'local';
+  const profile=state.profiles.find(value=>value.id===pid);
+  dialog.innerHTML=`<h2>Preview backup import</h2>
+    <p>Merge into <strong>${esc(profile?.name || 'this profile')}</strong>. Existing tasks, comments and subtasks are kept.</p>
+    <label>Matching IDs and settings <select id="importPreference" class="filter-sel"><option value="existing">Keep existing values</option><option value="backup">Use backup values</option></select></label>
+    <label><input type="checkbox" id="importMetrics" checked> Include recorded time and Pomodoro totals</label>
+    <p id="importSummary" role="status"></p><details><summary>Review changes</summary><ul id="importChanges"></ul></details><p id="importError" role="alert"></p>
+    <div class="backup-preview-actions"><button class="outline-btn" id="importPause">Pause timer and refresh preview</button>
+    <button class="primary-btn" id="confirmImport">Merge backup</button><button class="outline-btn" id="cancelImport">Cancel</button></div>`;
+  let plan;
+  const scopeOkay=()=>state.activeProfileId===pid && (_currentUser?.uid || 'local')===uid;
+  const refresh=()=>{
+    dialog.querySelector('#importError').textContent='';
     try {
-      const data = JSON.parse(ev.target.result);
-      if (data.entries) { state.notes.entries = { ...state.notes.entries, ...data.entries }; }
-      if (data.pomLog)  { state.pomLog = { ...state.pomLog, ...data.pomLog }; }
-      save();
-      renderLog(); renderStats(); renderAnalytics(); renderCalendar();
-      showToast('✓ Data imported!');
-    } catch (_) { showToast('❌ Invalid JSON file'); }
+      if(!scopeOkay())throw new Error('The account or profile changed. Close this preview and import again.');
+      plan=DailyFlowWorkflows.prepareBackupImport(_profileSnapshot(),backup,DailyFlowSyncCore,{
+        preferBackup:dialog.querySelector('#importPreference').value==='backup',includeMetrics:dialog.querySelector('#importMetrics').checked});
+      const s=plan.summary;
+      dialog.querySelector('#importSummary').textContent=`${s.addedTasks} new tasks; ${s.matchingTasks} matching tasks with differences; ${s.quickNotes} quick notes; ${s.categories} custom categories; ${s.metricDays} days with recorded totals. Totals are restored by date, never added twice.`;
+      const changes=dialog.querySelector('#importChanges');changes.replaceChildren();
+      const addLine=text=>{const li=document.createElement('li');li.textContent=text;changes.append(li);};
+      Object.entries(plan.data.entries).forEach(([date,tasks])=>tasks.forEach(task=>{
+        const previous=(plan.before.entries[date] || []).find(value=>value.id===task.id);
+        if(DailyFlowSyncCore.equal(previous,task))return;
+        addLine(`${date} · ${task.content} — ${previous?'Merge with existing task':'New task'}; ${task.done?'completed':task.archived?'archived':'unfinished'}; ${(task.subtasks || []).length} subtasks; ${(task.comments || []).length} comments.`);
+      }));
+      for(const date of new Set([...Object.keys(plan.before.focusLog),...Object.keys(plan.data.focusLog),...Object.keys(plan.before.pomLog),...Object.keys(plan.data.pomLog)])) {
+        if(plan.before.focusLog[date]!==plan.data.focusLog[date] || plan.before.pomLog[date]!==plan.data.pomLog[date])
+          addLine(`${date} totals: ${plan.before.focusLog[date] || 0}s → ${plan.data.focusLog[date] || 0}s focus; ${plan.before.pomLog[date] || 0} → ${plan.data.pomLog[date] || 0} Pomodoros.`);
+      }
+      Object.entries(plan.data.settings).forEach(([key,value])=>{if(!DailyFlowSyncCore.equal(plan.before.settings[key],value))addLine(`${key.replace(/([A-Z])/g,' $1')}: ${JSON.stringify(plan.before.settings[key] ?? 'unset')} → ${JSON.stringify(value)}`);});
+      if(!changes.children.length)addLine('No task, settings or daily-total changes. Notes, categories and achievements are merged by their IDs.');
+      dialog.querySelector('#confirmImport').disabled=state.timer.running || !!state.timer.pendingSegments?.length;
+      dialog.querySelector('#importPause').hidden=!state.timer.running;
+    } catch(error) {plan=null;dialog.querySelector('#confirmImport').disabled=true;dialog.querySelector('#importError').textContent=error.message;}
   };
-  reader.readAsText(file);
+  dialog.querySelector('#importPreference').onchange=refresh;
+  dialog.querySelector('#importMetrics').onchange=refresh;
+  dialog.querySelector('#importPause').onclick=()=>{stopTimer('pause');refresh();};
+  dialog.querySelector('#cancelImport').onclick=()=>dialog.close();
+  dialog.querySelector('#confirmImport').onclick=()=>{
+    try {
+      if(!plan || !scopeOkay())throw new Error('The account or profile changed. Open a new import preview.');
+      if(state.timer.running || state.timer.pendingSegments?.length)throw new Error('Pause the timer before importing.');
+      if(!DailyFlowSyncCore.equal(_profileSnapshot(),plan.before)){refresh();throw new Error('Profile data changed. Review the refreshed preview, then merge again.');}
+      const client=_profileClients.get(pid);
+      if(client)void _journal(plan.operations,client);
+      _storeProfile(pid,plan.data);
+      state.notes.entries=plan.data.entries;state.pomLog=plan.data.pomLog;state.focusLog=plan.data.focusLog;
+      state.settings={...DEFAULT_SETTINGS,...plan.data.settings};state.achievements=plan.data.achievements;
+      state.quickNotes=plan.data.quickNotes;state.customCats=plan.data.customCats;
+      _capturedProfiles.set(pid,_profileSnapshot());save();
+      document.documentElement.setAttribute('data-theme',state.settings.dark?'dark':'light');
+      applyAccentColor(state.settings.accentColor || '#7C3AED');
+      applyRingStyle(state.settings.ringStyle || 'solid');
+      document.documentElement.style.fontSize=(state.settings.fontSize || 16)+'px';
+      if(!state.timer.sessionId && state.timer.remainingMs===state.timer.durationMs)setMode(state.timer.mode);
+      populateCatSelects();renderLog();renderStats();renderCalendar();renderQuickNotes();
+      if(state.ui.view==='analytics')renderAnalytics();
+      dialog.close();showToast('✓ Backup merged into '+(profile?.name || 'this profile')+'.');
+    } catch(error) {dialog.querySelector('#importError').textContent=error.message;}
+  };
+  document.body.append(dialog);refresh();dialog.showModal();
 }
 
 /* ─────────────────────────────────────────────────────
@@ -4215,19 +4547,9 @@ function applyRingStyle(style) {
 function applyFocusMode() {
   const sidebar = document.getElementById('sidebar');
   if (!sidebar) return;
-  const hide = state.settings.focusMode && state.timer.running && state.timer.mode === 'work';
-  sidebar.style.transition = 'width .3s ease, opacity .3s ease, padding .3s ease';
-  if (hide) {
-    sidebar.style.width   = '0';
-    sidebar.style.opacity = '0';
-    sidebar.style.padding = '0';
-    sidebar.style.overflow = 'hidden';
-  } else {
-    sidebar.style.width   = '';
-    sidebar.style.opacity = '';
-    sidebar.style.padding = '';
-    sidebar.style.overflow = '';
-  }
+  // Keep the timer and all its controls visible; quiet only the supporting cards.
+  sidebar.classList.toggle('focus-active', !!state.settings.focusMode && state.timer.running &&
+    (state.timer.mode === 'work' || state.timer.mode === 'stopwatch'));
 }
 
 function applyWarmLight(val) {
@@ -4334,8 +4656,9 @@ function initDragDrop() {
 
 function initKeyboard() {
   document.addEventListener('keydown', e => {
+    if(!state.activeProfileId)return;
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
-    if (document.querySelector('.modal-overlay.open')) {
+    if (document.querySelector('.modal-overlay.open, dialog[open]')) {
       if (e.key === 'Escape') document.querySelectorAll('.modal-overlay.open').forEach(m => m.classList.remove('open'));
       return;
     }
@@ -4464,9 +4787,6 @@ function init() {
   load();
   document.documentElement.setAttribute('data-theme', state.settings.dark ? 'dark' : 'light');
 
-  // Timer settings initialize timer's timeLeft from settings
-  state.timer.timeLeft = getModeSecs(state.timer.mode);
-
   // Only reset timeLeft from settings if load() did NOT restore a saved value
   if (!state.timer._restored) {
     state.timer.timeLeft = getModeSecs(state.timer.mode);
@@ -4495,6 +4815,7 @@ function init() {
   });
   document.getElementById('resetBtn').addEventListener('click', resetTimer);
   document.getElementById('skipBtn').addEventListener('click', skipTimer);
+  document.getElementById('finishBtn').addEventListener('click', finishTimer);
   document.querySelectorAll('.tab').forEach(btn => {
     btn.addEventListener('click', () => setMode(btn.dataset.mode));
   });
@@ -4507,7 +4828,10 @@ function init() {
   // Add entry
   document.getElementById('addBtn').addEventListener('click', addEntry);
   document.getElementById('entryInput').addEventListener('keydown', e => { if (e.key==='Enter') addEntry(); });
-  document.getElementById('entryDate')?.addEventListener('change', syncEntryDatePicker);
+  document.getElementById('entryDate')?.addEventListener('change', () => {
+    state.ui.entryDateExplicit = !!document.getElementById('entryDate').value;
+    syncEntryDatePicker();
+  });
   document.getElementById('toggleDesc').addEventListener('click', () => {
     state.ui.descOpen = !state.ui.descOpen;
     const panel = document.getElementById('descRow');
@@ -4526,7 +4850,7 @@ function init() {
 
 
   document.getElementById('bannerStop').addEventListener('click', () => {
-    state.timer.activeEntryId = null; updateSessionBanner(); renderLog();
+    if (state.timer.activeEntryId) trackEntry(state.timer.activeEntryId);
   });
 
   // Search & filters
@@ -4629,6 +4953,8 @@ function init() {
   // Export / import
   document.getElementById('exportJsonBtn').addEventListener('click', exportJson);
   document.getElementById('exportCsvBtn').addEventListener('click', exportCsv);
+  document.getElementById('exportBackupMdBtn').addEventListener('click', exportBackupMarkdown);
+  document.getElementById('exportBackupXlsxBtn').addEventListener('click', exportBackupExcel);
   document.getElementById('importBtn').addEventListener('click', () => document.getElementById('importFile').click());
   document.getElementById('importFile').addEventListener('change', e => {
     if (e.target.files[0]) importJson(e.target.files[0]);
@@ -4695,6 +5021,18 @@ function init() {
 
   // Save exact timer snapshot on page close / refresh
   window.addEventListener('beforeunload', saveTimerState);
+  document.addEventListener('visibilitychange', () => {
+    if (state.timer.running) tick();
+    saveTimerState();
+  });
+  let observedDay = todayStr();
+  setInterval(() => {
+    if (todayStr() !== observedDay) {
+      observedDay = todayStr();
+      checkAutoRollover();
+      renderStats(); renderCalendar(); renderDateHeader();
+    }
+  }, 30000);
 
   // Drag & drop
   initDragDrop();
@@ -4703,7 +5041,22 @@ function init() {
 
   // PWA service worker
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.register('sw.js', {updateViaCache:'none'}).then(registration => {
+      const announceUpdate = () => {
+        if (registration.waiting && navigator.serviceWorker.controller) {
+          showToast('An update is ready. It will apply after all DailyFlow tabs are closed.');
+        }
+      };
+      announceUpdate();
+      registration.addEventListener('updatefound', () => {
+        const installing = registration.installing;
+        installing?.addEventListener('statechange', () => {
+          if (installing.state === 'installed') announceUpdate();
+        });
+      });
+    }).catch(error => {
+      console.warn('Offline app shell could not be prepared:', error.message);
+    });
   }
 
   // Mark app as ready so auth state changes can trigger data reloads

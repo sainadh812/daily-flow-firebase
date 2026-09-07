@@ -1,0 +1,19 @@
+{
+  "name": "dailyflow",
+  "version": "3.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:browser": "playwright test",
+    "test:rules": "node --test tests/rules.test.mjs",
+    "build": "node scripts/build-web.cjs",
+    "dev": "node scripts/serve.cjs"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.0",
+    "@playwright/test": "^1.55.0",
+    "esbuild": "0.28.2",
+    "fake-indexeddb": "^6.2.2",
+    "firebase": "^12.0.0"
+  }
+}
